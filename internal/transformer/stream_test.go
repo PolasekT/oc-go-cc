@@ -338,6 +338,59 @@ func TestProxyStream_ReasoningAndContentInSameChunk(t *testing.T) {
 	}
 }
 
+// TestProxyStream_ReasoningBeforeContentFastPathRegression ensures that when
+// a provider sends reasoning_content BEFORE content in the same delta (with no
+// role field), the fast path for content is skipped and reasoning_content is
+// not silently dropped. If it were dropped, the next turn would fail on
+// DeepSeek with "reasoning_content must be passed back".
+func TestProxyStream_ReasoningBeforeContentFastPathRegression(t *testing.T) {
+	handler := NewStreamHandler()
+	w := newMockResponseWriter()
+	// Hand-crafted JSON: reasoning_content appears before content, no role field.
+	// Before the fix, the fast path matched "delta":{"content":" and returned
+	// early, discarding reasoning_content entirely.
+	body := sseLines(
+		`{"choices":[{"delta":{"reasoning_content":"Thinking...","content":"Hello"}}]}`,
+		`{"choices":[{"delta":{"content":" world"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := handler.ProxyStream(w, body, "deepseek-v4-flash", ctx); err != nil {
+		t.Fatalf("ProxyStream error: %v", err)
+	}
+
+	events := parseSSEEvents(t, w.buf.String())
+
+	// message_start + thinking_start + thinking_delta + thinking_stop +
+	// text_start + text_delta("Hello") + text_delta(" world") + text_stop +
+	// message_delta + message_stop = 10
+	if len(events) != 10 {
+		t.Fatalf("expected 10 events, got %d: %+v", len(events), events)
+	}
+
+	// Block 0: thinking (must NOT be lost)
+	if events[1].Type != "content_block_start" || events[1].Delta.Type != "thinking" {
+		t.Errorf("event[1] = %+v, want content_block_start(thinking)", events[1])
+	}
+	if events[2].Type != "content_block_delta" || events[2].Delta.Type != "thinking_delta" {
+		t.Errorf("event[2] = %+v, want content_block_delta(thinking_delta)", events[2])
+	}
+	if events[2].Delta.Thinking != "Thinking..." {
+		t.Errorf("event[2].Delta.Thinking = %q, want %q", events[2].Delta.Thinking, "Thinking...")
+	}
+
+	// Block 1: text
+	if events[4].Type != "content_block_start" || events[4].Delta.Type != "text" {
+		t.Errorf("event[4] = %+v, want content_block_start(text)", events[4])
+	}
+	if events[5].Delta.Text != "Hello" {
+		t.Errorf("event[5].Delta.Text = %q, want Hello", events[5].Delta.Text)
+	}
+}
+
 // helpers
 
 func mustJSON(t *testing.T, v any) string {

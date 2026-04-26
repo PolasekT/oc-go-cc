@@ -310,6 +310,14 @@ func (h *MessagesHandler) handleStreaming(
 			continue
 		}
 
+		h.logger.Info("transformed request state",
+			"model", model.ModelID,
+			"reasoning_effort", openaiReq.ReasoningEffort,
+			"thinking", string(openaiReq.Thinking),
+			"has_thinking_history", transformer.HasThinkingBlocks(anthropicReq.Messages),
+			"assistant_rc_count", countReasoningContent(openaiReq.Messages),
+		)
+
 		// Get streaming body from upstream
 		streamBody, err := h.client.GetStreamingBody(ctx, model.ModelID, openaiReq)
 		if err != nil {
@@ -522,19 +530,11 @@ func (h *MessagesHandler) executeOpenAIRequest(
 		return nil, fmt.Errorf("request transform failed: %w", err)
 	}
 
-	// Log the transformed request for debugging
-	reqJSON, _ := json.Marshal(openaiReq)
-	h.logger.Debug("transformed OpenAI request", "body", string(reqJSON))
-
 	// Handle non-streaming.
 	resp, err := h.client.ChatCompletionNonStreaming(ctx, model.ModelID, openaiReq)
 	if err != nil {
 		return nil, fmt.Errorf("chat completion failed: %w", err)
 	}
-
-	// Log the raw response for debugging
-	respJSON, _ := json.Marshal(resp)
-	h.logger.Debug("OpenAI response", "body", string(respJSON))
 
 	// Transform response to Anthropic format.
 	anthropicResp, err := h.responseTransformer.TransformResponse(resp, model.ModelID)
@@ -563,6 +563,17 @@ func extractTextFromBlocks(blocks []types.ContentBlock) string {
 		}
 	}
 	return content
+}
+
+// countReasoningContent counts how many messages in the OpenAI request have reasoning_content set.
+func countReasoningContent(messages []types.ChatMessage) int {
+	count := 0
+	for _, m := range messages {
+		if m.ReasoningContent != nil {
+			count++
+		}
+	}
+	return count
 }
 
 // sendError sends an error response in Anthropic format.

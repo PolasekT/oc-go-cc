@@ -163,58 +163,64 @@ func (h *StreamHandler) processSSELine(
 		return nil
 	}
 
-	// Fast path: check if this is a content chunk without full JSON parsing
-	// Look for "delta":{"content":" pattern
-	if idx := strings.Index(data, `"delta":{"content":"`); idx != -1 {
-		// Extract content directly
-		start := idx + len(`"delta":{"content":"`)
-		end := strings.Index(data[start:], `"`)
-		if end != -1 {
-			content := data[start : start+end]
-			if content != "" {
-				if !*contentStarted {
-					// If reasoning was already started, close it first
-					if *reasoningStarted {
-						stopEvent := types.MessageEvent{
-							Type:  "content_block_stop",
-							Index: contentIndex,
+	// Fast path: check if this is a content chunk without full JSON parsing.
+	// Skip the fast path when reasoning_content is also present in the same
+	// chunk — falling through to JSON parsing ensures both fields are handled
+	// correctly. Otherwise reasoning_content gets silently dropped, and on the
+	// next turn DeepSeek rejects the request with:
+	//   "The reasoning_content in the thinking mode must be passed back to the API."
+	if !strings.Contains(data, `"reasoning_content"`) {
+		if idx := strings.Index(data, `"delta":{"content":"`); idx != -1 {
+			// Extract content directly
+			start := idx + len(`"delta":{"content":"`)
+			end := strings.Index(data[start:], `"`)
+			if end != -1 {
+				content := data[start : start+end]
+				if content != "" {
+					if !*contentStarted {
+						// If reasoning was already started, close it first
+						if *reasoningStarted {
+							stopEvent := types.MessageEvent{
+								Type:  "content_block_stop",
+								Index: contentIndex,
+							}
+							if err := writeSSEEvent(w, stopEvent); err != nil {
+								return ErrClientDisconnected
+							}
+							*contentIndex++
+							*reasoningStarted = false
 						}
-						if err := writeSSEEvent(w, stopEvent); err != nil {
+						*contentStarted = true
+						// Send content_block_start
+						startEvent := types.MessageEvent{
+							Type:  "content_block_start",
+							Index: contentIndex,
+							Delta: &types.Delta{
+								Type: "text",
+							},
+						}
+						if err := writeSSEEvent(w, startEvent); err != nil {
 							return ErrClientDisconnected
 						}
-						*contentIndex++
-						*reasoningStarted = false
 					}
-					*contentStarted = true
-					// Send content_block_start
-					startEvent := types.MessageEvent{
-						Type:  "content_block_start",
+
+					// Send content_block_delta
+					delta := types.Delta{
+						Type: "text_delta",
+						Text: content,
+					}
+					event := types.MessageEvent{
+						Type:  "content_block_delta",
 						Index: contentIndex,
-						Delta: &types.Delta{
-							Type: "text",
-						},
+						Delta: &delta,
 					}
-					if err := writeSSEEvent(w, startEvent); err != nil {
+					if err := writeSSEEvent(w, event); err != nil {
 						return ErrClientDisconnected
 					}
+					flusher.Flush()
 				}
-
-				// Send content_block_delta
-				delta := types.Delta{
-					Type: "text_delta",
-					Text: content,
-				}
-				event := types.MessageEvent{
-					Type:  "content_block_delta",
-					Index: contentIndex,
-					Delta: &delta,
-				}
-				if err := writeSSEEvent(w, event); err != nil {
-					return ErrClientDisconnected
-				}
-				flusher.Flush()
+				return nil
 			}
-			return nil
 		}
 	}
 

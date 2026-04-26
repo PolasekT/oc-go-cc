@@ -5,6 +5,7 @@ package transformer
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"oc-go-cc/internal/config"
 	"oc-go-cc/pkg/types"
@@ -18,13 +19,25 @@ func NewRequestTransformer() *RequestTransformer {
 	return &RequestTransformer{}
 }
 
+// isDeepSeekModel returns true for DeepSeek models that require thinking mode handling.
+func isDeepSeekModel(modelID string) bool {
+	return strings.HasPrefix(modelID, "deepseek-")
+}
+
+// needsPlaceholderReasoning returns true for providers whose validators require
+// a non-empty reasoning_content field on assistant tool-call messages.
+func needsPlaceholderReasoning(modelID string) bool {
+	// Moonshot's validator treats an empty string as missing.
+	return strings.HasPrefix(modelID, "kimi-")
+}
+
 // TransformRequest converts an Anthropic MessageRequest to OpenAI ChatCompletionRequest.
 func (t *RequestTransformer) TransformRequest(
 	anthropicReq *types.MessageRequest,
 	model config.ModelConfig,
 ) (*types.ChatCompletionRequest, error) {
 	// Transform messages
-	messages, err := t.transformMessages(anthropicReq)
+	messages, err := t.transformMessages(anthropicReq, model.ModelID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to transform messages: %w", err)
 	}
@@ -58,11 +71,32 @@ func (t *RequestTransformer) TransformRequest(
 		maxTokens := model.MaxTokens
 		openaiReq.MaxTokens = &maxTokens
 	}
-	if model.ReasoningEffort != "" {
-		openaiReq.ReasoningEffort = &model.ReasoningEffort
-	}
-	if len(model.Thinking) > 0 {
-		openaiReq.Thinking = model.Thinking
+
+	// DeepSeek-v4 models always operate in thinking mode. When conversation
+	// history contains thinking blocks (round-tripped as reasoning_content),
+	// we MUST send thinking mode params so DeepSeek validates reasoning_content
+	// on assistant messages. When history LACKS thinking blocks (Claude Code
+	// dropped them), we MUST explicitly disable thinking mode so DeepSeek
+	// doesn't require reasoning_content we can't provide.
+	hasThinkingInHistory := HasThinkingBlocks(anthropicReq.Messages)
+	if hasThinkingInHistory {
+		// Thinking mode required — use model config values or defaults.
+		if model.ReasoningEffort != "" {
+			openaiReq.ReasoningEffort = &model.ReasoningEffort
+		} else {
+			defaultEffort := "high"
+			openaiReq.ReasoningEffort = &defaultEffort
+		}
+		if len(model.Thinking) > 0 {
+			openaiReq.Thinking = model.Thinking
+		} else {
+			openaiReq.Thinking = json.RawMessage(`{"type":"enabled"}`)
+		}
+	} else if len(model.Thinking) > 0 || model.ReasoningEffort != "" {
+		// Model config wants thinking mode but history has no thinking blocks.
+		// Explicitly disable to prevent DeepSeek from requiring reasoning_content
+		// on assistant messages that can't provide it.
+		openaiReq.Thinking = json.RawMessage(`{"type":"disabled"}`)
 	}
 
 	// Transform tools if present
@@ -73,8 +107,26 @@ func (t *RequestTransformer) TransformRequest(
 	return openaiReq, nil
 }
 
+// HasThinkingBlocks returns true if any assistant message contains a
+// thinking content block.
+func HasThinkingBlocks(messages []types.Message) bool {
+	for _, msg := range messages {
+		if msg.Role != "assistant" {
+			continue
+		}
+		for _, block := range msg.ContentBlocks() {
+			if block.Type == "thinking" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // transformMessages converts Anthropic messages to OpenAI format.
-func (t *RequestTransformer) transformMessages(anthropicReq *types.MessageRequest) ([]types.ChatMessage, error) {
+func (t *RequestTransformer) transformMessages(anthropicReq *types.MessageRequest, modelID string) ([]types.ChatMessage, error) {
+	hasThinking := HasThinkingBlocks(anthropicReq.Messages)
+
 	var result []types.ChatMessage
 
 	// Add system message if present, preserving cache_control if available
@@ -101,7 +153,7 @@ func (t *RequestTransformer) transformMessages(anthropicReq *types.MessageReques
 
 	// Transform each message
 	for _, msg := range anthropicReq.Messages {
-		openaiMsgs, err := t.transformMessage(msg)
+		openaiMsgs, err := t.transformMessage(msg, modelID, hasThinking)
 		if err != nil {
 			return nil, err
 		}
@@ -113,14 +165,14 @@ func (t *RequestTransformer) transformMessages(anthropicReq *types.MessageReques
 
 // transformMessage converts a single Anthropic message to one or more OpenAI messages.
 // Tool_use and tool_result require special handling to map to OpenAI's function calling format.
-func (t *RequestTransformer) transformMessage(msg types.Message) ([]types.ChatMessage, error) {
+func (t *RequestTransformer) transformMessage(msg types.Message, modelID string, hasThinkingInHistory bool) ([]types.ChatMessage, error) {
 	blocks := msg.ContentBlocks()
 
 	switch msg.Role {
 	case "user":
 		return t.transformUserMessage(blocks)
 	case "assistant":
-		return t.transformAssistantMessage(blocks)
+		return t.transformAssistantMessage(blocks, modelID, hasThinkingInHistory)
 	default:
 		// Fallback: concatenate all text
 		var text string
@@ -174,7 +226,7 @@ func (t *RequestTransformer) transformUserMessage(blocks []types.ContentBlock) (
 }
 
 // transformAssistantMessage converts an assistant message with potential tool_use blocks.
-func (t *RequestTransformer) transformAssistantMessage(blocks []types.ContentBlock) ([]types.ChatMessage, error) {
+func (t *RequestTransformer) transformAssistantMessage(blocks []types.ContentBlock, modelID string, hasThinkingInHistory bool) ([]types.ChatMessage, error) {
 	var textParts []string
 	var thinkingParts []string
 	var toolCalls []types.ToolCall
@@ -184,8 +236,8 @@ func (t *RequestTransformer) transformAssistantMessage(blocks []types.ContentBlo
 		case "text":
 			textParts = append(textParts, block.Text)
 		case "thinking":
-			// Some OpenAI-compatible providers expect tool-call assistant messages
-			// to preserve chain-of-thought in a provider-specific reasoning field.
+			// Preserve chain-of-thought so it can be forwarded back to providers
+			// that require reasoning_content to be preserved across turns.
 			if block.Thinking != "" {
 				thinkingParts = append(thinkingParts, block.Thinking)
 			}
@@ -217,16 +269,22 @@ func (t *RequestTransformer) transformAssistantMessage(blocks []types.ContentBlo
 	}
 
 	var reasoningContentPtr *string
-	if len(toolCalls) > 0 || reasoningContent != "" {
-		// Some providers require reasoning_content to be present on assistant
-		// tool-call messages whenever thinking mode is enabled, even if the
-		// upstream Anthropic history did not include an explicit thinking block.
+	if reasoningContent != "" {
+		// Real thinking content from the upstream history — preserve it.
+		reasoningContentPtr = &reasoningContent
+	} else if hasThinkingInHistory && len(toolCalls) > 0 && isDeepSeekModel(modelID) {
+		// DeepSeek in thinking mode requires reasoning_content on ALL assistant
+		// messages, including tool-call turns where Claude Code didn't preserve
+		// the thinking block. Use a placeholder that won't trigger validation:
+		// DeepSeek checks for the field's presence, not its content, when the
+		// original thinking was stripped by the client.
+		placeholder := " "
+		reasoningContentPtr = &placeholder
+	} else if len(toolCalls) > 0 && needsPlaceholderReasoning(modelID) {
 		// Moonshot's validator treats an empty string as missing, so use a
 		// non-empty placeholder when we must provide the field.
-		if reasoningContent == "" {
-			reasoningContent = " "
-		}
-		reasoningContentPtr = &reasoningContent
+		placeholder := " "
+		reasoningContentPtr = &placeholder
 	}
 
 	msg := types.ChatMessage{
