@@ -92,4 +92,4 @@ oc-go-cc --version          Show version
 
 ## License
 
-MIT
+[AGPL-3.0](LICENSE)
