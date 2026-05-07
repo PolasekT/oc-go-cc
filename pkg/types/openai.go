@@ -39,7 +39,10 @@ type ChatMessage struct {
 }
 
 // ToolCall represents a function call made by the model.
+// Index is only present in streaming deltas — it identifies which tool call
+// position this delta belongs to within the tool_calls array.
 type ToolCall struct {
+	Index    int          `json:"index,omitempty"`
 	ID       string       `json:"id"`
 	Type     string       `json:"type"`
 	Function FunctionCall `json:"function"`
