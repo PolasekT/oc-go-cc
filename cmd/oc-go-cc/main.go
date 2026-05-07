@@ -133,14 +133,16 @@ func serveCmd() *cobra.Command {
 				return fmt.Errorf("failed to create server: %w", err)
 			}
 
-			// Start config watcher for hot reload.
-			watchCtx, watchCancel := context.WithCancel(context.Background())
-			defer watchCancel()
-			go func() {
-				if err := config.WatchConfig(watchCtx, atomicCfg); err != nil && err != context.Canceled {
-					slog.Error("config watcher failed", "error", err)
-				}
-			}()
+			// Start config watcher for hot reload (only if enabled in config).
+			if cfg.HotReload {
+				watchCtx, watchCancel := context.WithCancel(context.Background())
+				defer watchCancel()
+				go func() {
+					if err := config.WatchConfig(watchCtx, atomicCfg); err != nil && err != context.Canceled {
+						slog.Error("config watcher failed", "error", err)
+					}
+				}()
+			}
 
 			fmt.Printf("Starting %s v%s\n", appName, version)
 			fmt.Printf("Listening on %s:%d\n", cfg.Host, cfg.Port)
@@ -381,6 +383,7 @@ func getDefaultConfig() string {
   "api_key": "${OC_GO_CC_API_KEY}",
   "host": "127.0.0.1",
   "port": 3456,
+  "hot_reload": false,
   "models": {
     "background": {
       "provider": "opencode-go",

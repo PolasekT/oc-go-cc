@@ -8,6 +8,7 @@ type Config struct {
 	APIKey     string                   `json:"api_key"`
 	Host       string                   `json:"host"`
 	Port       int                      `json:"port"`
+	HotReload  bool                     `json:"hot_reload"`
 	Models     map[string]ModelConfig   `json:"models"`
 	Fallbacks  map[string][]ModelConfig `json:"fallbacks"`
 	OpenCodeGo OpenCodeGoConfig         `json:"opencode_go"`
