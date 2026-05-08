@@ -235,7 +235,10 @@ func TestProxyStream_UsageOnlyChunk(t *testing.T) {
 	if usage == nil {
 		t.Fatalf("no usage event found in stream: %+v", events)
 	}
-	if got, want := usage.InputTokens, 123; got != want {
+	// Per Anthropic spec, input_tokens excludes cache reads AND cache
+	// creations. Upstream prompt_tokens=123 split as 100 hit + 23 miss
+	// means everything was accounted for by the cache → input_tokens = 0.
+	if got, want := usage.InputTokens, 0; got != want {
 		t.Fatalf("InputTokens = %d, want %d", got, want)
 	}
 	if got, want := usage.OutputTokens, 45; got != want {
@@ -246,6 +249,47 @@ func TestProxyStream_UsageOnlyChunk(t *testing.T) {
 	}
 	if got, want := usage.CacheCreationInputTokens, 23; got != want {
 		t.Fatalf("CacheCreationInputTokens = %d, want %d", got, want)
+	}
+}
+
+// TestProxyStream_PartialCacheTokensStreaming covers the case where
+// hit + miss < prompt_tokens in a streaming context. The leftover tokens
+// should map to input_tokens.
+func TestProxyStream_PartialCacheTokensStreaming(t *testing.T) {
+	handler := NewStreamHandler()
+	w := newMockResponseWriter()
+	body := sseLines(
+		`{"choices":[{"delta":{"content":"Partial cache"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_cache_hit_tokens":60,"prompt_cache_miss_tokens":30}}`,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := handler.ProxyStream(w, body, "deepseek-v4-pro", ctx); err != nil {
+		t.Fatalf("ProxyStream error: %v", err)
+	}
+
+	events := parseSSEEvents(t, w.buf.String())
+	var usage *types.Usage
+	for _, event := range events {
+		if event.Usage != nil {
+			usage = event.Usage
+		}
+	}
+	if usage == nil {
+		t.Fatalf("no usage event found in stream: %+v", events)
+	}
+	// 100 - 60 - 30 = 10 tokens are neither cached nor newly cached.
+	if got, want := usage.InputTokens, 10; got != want {
+		t.Errorf("InputTokens = %d, want %d", got, want)
+	}
+	if got, want := usage.CacheReadInputTokens, 60; got != want {
+		t.Errorf("CacheReadInputTokens = %d, want %d", got, want)
+	}
+	if got, want := usage.CacheCreationInputTokens, 30; got != want {
+		t.Errorf("CacheCreationInputTokens = %d, want %d", got, want)
 	}
 }
 
