@@ -64,6 +64,83 @@ func TestLoadJSON(t *testing.T) {
 	}
 }
 
+func TestLoadJSON_WithModelOverrides(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	cfgJSON := `{
+		"api_key": "test-key",
+		"model_overrides": {
+			"claude-sonnet-4.5": {
+				"provider": "opencode-zen",
+				"model_id": "claude-sonnet-4.5",
+				"temperature": 0.5,
+				"max_tokens": 4096
+			}
+		}
+	}`
+
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	_ = os.Setenv("OC_GO_CC_CONFIG", cfgPath)
+	defer func() { _ = os.Unsetenv("OC_GO_CC_CONFIG") }()
+	oldAPIKey := os.Getenv("OC_GO_CC_API_KEY")
+	_ = os.Unsetenv("OC_GO_CC_API_KEY")
+	defer func() { _ = os.Setenv("OC_GO_CC_API_KEY", oldAPIKey) }()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	entry, ok := cfg.ModelOverrides["claude-sonnet-4.5"]
+	if !ok {
+		t.Fatal("expected model_overrides[\"claude-sonnet-4.5\"] to be present after Load()")
+	}
+	if entry.Provider != "opencode-zen" {
+		t.Errorf("Provider = %q, want %q", entry.Provider, "opencode-zen")
+	}
+	if entry.ModelID != "claude-sonnet-4.5" {
+		t.Errorf("ModelID = %q, want %q", entry.ModelID, "claude-sonnet-4.5")
+	}
+	if entry.Temperature != 0.5 {
+		t.Errorf("Temperature = %f, want 0.5", entry.Temperature)
+	}
+	if entry.MaxTokens != 4096 {
+		t.Errorf("MaxTokens = %d, want 4096", entry.MaxTokens)
+	}
+}
+
+func TestLoadJSON_ModelOverrides_InvalidEntryRejected(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	cfgJSON := `{
+		"api_key": "test-key",
+		"model_overrides": {
+			"bad-entry": {
+				"provider": "opencode-go"
+			}
+		}
+	}`
+
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	_ = os.Setenv("OC_GO_CC_CONFIG", cfgPath)
+	defer func() { _ = os.Unsetenv("OC_GO_CC_CONFIG") }()
+	oldAPIKey := os.Getenv("OC_GO_CC_API_KEY")
+	_ = os.Unsetenv("OC_GO_CC_API_KEY")
+	defer func() { _ = os.Setenv("OC_GO_CC_API_KEY", oldAPIKey) }()
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load() to fail validation for empty model_id, got nil")
+	}
+}
+
 func TestLoadMissingAPIKey(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
@@ -222,6 +299,71 @@ func TestInterpolateEnvVars(t *testing.T) {
 	want := `{"api_key": "my-secret-value", "host": "${UNSET_VAR:-fallback}"}`
 	if result != want {
 		t.Errorf("interpolateEnvVars() = %q, want %q", result, want)
+	}
+}
+
+func TestApplyDefaults_InitializesNilMaps(t *testing.T) {
+	cfg := &Config{APIKey: "test"}
+	applyDefaults(cfg)
+	if cfg.Fallbacks == nil {
+		t.Error("applyDefaults should initialize Fallbacks to non-nil map")
+	}
+	if cfg.ModelOverrides == nil {
+		t.Error("applyDefaults should initialize ModelOverrides to non-nil map")
+	}
+	// Both maps should be writable (read-then-write) without panicking.
+	cfg.Fallbacks["default"] = nil
+	cfg.ModelOverrides["kimi-k2.6"] = ModelConfig{}
+}
+
+func TestValidateModelOverrides_EmptyModelID(t *testing.T) {
+	cfg := &Config{
+		APIKey: "test",
+		ModelOverrides: map[string]ModelConfig{
+			"bad-entry": {Provider: "opencode-go", ModelID: ""},
+		},
+	}
+	if err := validate(cfg); err == nil {
+		t.Fatal("expected validation error for empty model_id, got nil")
+	}
+}
+
+func TestValidateModelOverrides_InvalidProvider(t *testing.T) {
+	cfg := &Config{
+		APIKey: "test",
+		ModelOverrides: map[string]ModelConfig{
+			"bad-provider": {Provider: "unknown-provider", ModelID: "some-model"},
+		},
+	}
+	if err := validate(cfg); err == nil {
+		t.Fatal("expected validation error for unknown provider, got nil")
+	}
+}
+
+func TestValidateModelOverrides_EmptyProviderOK(t *testing.T) {
+	// Empty provider should be allowed (defaults to opencode-go at request time).
+	cfg := &Config{
+		APIKey: "test",
+		ModelOverrides: map[string]ModelConfig{
+			"good-entry": {ModelID: "kimi-k2.6"},
+		},
+	}
+	if err := validate(cfg); err != nil {
+		t.Errorf("expected no validation error for empty provider, got %v", err)
+	}
+}
+
+func TestValidateModelOverrides_AllValidProviders(t *testing.T) {
+	cfg := &Config{
+		APIKey: "test",
+		ModelOverrides: map[string]ModelConfig{
+			"a": {Provider: "opencode-go", ModelID: "m1"},
+			"b": {Provider: "opencode-zen", ModelID: "m2"},
+			"c": {ModelID: "m3"},
+		},
+	}
+	if err := validate(cfg); err != nil {
+		t.Errorf("expected no validation error, got %v", err)
 	}
 }
 

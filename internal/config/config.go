@@ -13,6 +13,7 @@ type Config struct {
 	RespectRequestedModel          bool                     `json:"respect_requested_model"`
 	Models                         map[string]ModelConfig   `json:"models"`
 	Fallbacks                      map[string][]ModelConfig `json:"fallbacks"`
+	ModelOverrides                 map[string]ModelConfig   `json:"model_overrides"`
 	OpenCodeGo                     OpenCodeGoConfig         `json:"opencode_go"`
 	OpenCodeZen                    OpenCodeZenConfig        `json:"opencode_zen"`
 	Logging                        LoggingConfig            `json:"logging"`

@@ -163,12 +163,38 @@ func applyDefaults(cfg *Config) {
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = defaultLogLevel
 	}
+	if cfg.Fallbacks == nil {
+		cfg.Fallbacks = make(map[string][]ModelConfig)
+	}
+	if cfg.ModelOverrides == nil {
+		cfg.ModelOverrides = make(map[string]ModelConfig)
+	}
 }
 
 // validate checks that all required configuration fields are present.
 func validate(cfg *Config) error {
 	if cfg.APIKey == "" {
 		return fmt.Errorf("api_key is required (set via config file or OC_GO_CC_API_KEY env var)")
+	}
+
+	if err := validateModelOverrides(cfg.ModelOverrides); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateModelOverrides ensures each override entry has a non-empty model_id
+// and a recognized provider. Empty model_id would produce broken upstream URLs
+// (surfacing far from the config error); an unknown provider would silently
+// fall through to defaults at request time.
+func validateModelOverrides(overrides map[string]ModelConfig) error {
+	for key, mc := range overrides {
+		if mc.ModelID == "" {
+			return fmt.Errorf("model_overrides[%q] is missing required field model_id", key)
+		}
+		if mc.Provider != "" && mc.Provider != "opencode-go" && mc.Provider != "opencode-zen" {
+			return fmt.Errorf("model_overrides[%q] has invalid provider %q (must be \"opencode-go\" or \"opencode-zen\")", key, mc.Provider)
+		}
 	}
 	return nil
 }
