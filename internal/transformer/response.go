@@ -258,9 +258,8 @@ func (t *ResponseTransformer) TransformGeminiResponse(
 	}
 
 	stopReason := "end_turn"
-	if candidate.FinishReason == "STOP" {
-		stopReason = "end_turn"
-	} else if candidate.FinishReason == "MAX_TOKENS" {
+	switch candidate.FinishReason {
+	case "MAX_TOKENS":
 		stopReason = "max_tokens"
 	}
 

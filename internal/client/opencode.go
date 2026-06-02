@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"oc-go-cc/internal/config"
@@ -51,13 +52,23 @@ func NewOpenCodeClient(atomic *config.AtomicConfig) *OpenCodeClient {
 }
 
 // IsAnthropicModel returns true if the model requires the Anthropic endpoint.
+// This includes both Go models (minimax) and Zen models (claude, qwen).
 func IsAnthropicModel(modelID string) bool {
 	switch modelID {
 	case "minimax-m2.5", "minimax-m2.7":
 		return true
 	default:
-		return false
+		return isZenAnthropicModel(modelID)
 	}
+}
+
+// isZenAnthropicModel returns true for models on Zen that use the Anthropic endpoint.
+func isZenAnthropicModel(modelID string) bool {
+	// Qwen models on Zen use the Anthropic endpoint
+	if strings.HasPrefix(modelID, "qwen") {
+		return true
+	}
+	return false
 }
 
 // Provider returns the provider string for a model config.
