@@ -7,10 +7,10 @@ import "encoding/json"
 
 // ResponsesRequest represents a request to the OpenAI Responses API.
 type ResponsesRequest struct {
-	Model    string              `json:"model"`
-	Input    []ResponsesInput    `json:"input"`
-	Stream   bool                `json:"stream,omitempty"`
-	Tools    []ResponsesTool     `json:"tools,omitempty"`
+	Model     string              `json:"model"`
+	Input     []ResponsesInput    `json:"input"`
+	Stream    bool                `json:"stream,omitempty"`
+	Tools     []ResponsesTool     `json:"tools,omitempty"`
 	Reasoning *ResponsesReasoning `json:"reasoning,omitempty"`
 }
 
@@ -35,23 +35,23 @@ type ResponsesReasoning struct {
 
 // ResponsesResponse represents a response from the OpenAI Responses API.
 type ResponsesResponse struct {
-	ID      string             `json:"id"`
-	Object  string             `json:"object"`
-	Created int64              `json:"created"`
-	Model   string             `json:"model"`
-	Output  []ResponsesOutput  `json:"output"`
-	Usage   ResponsesUsage     `json:"usage"`
+	ID      string            `json:"id"`
+	Object  string            `json:"object"`
+	Created int64             `json:"created"`
+	Model   string            `json:"model"`
+	Output  []ResponsesOutput `json:"output"`
+	Usage   ResponsesUsage    `json:"usage"`
 }
 
 // ResponsesOutput represents a single output item.
 type ResponsesOutput struct {
-	Type         string               `json:"type"`
-	ID           string               `json:"id,omitempty"`
-	Role         string               `json:"role,omitempty"`
-	Content      []ResponsesContent   `json:"content,omitempty"`
-	CallID       string               `json:"call_id,omitempty"`
-	Name         string               `json:"name,omitempty"`
-	Arguments    string               `json:"arguments,omitempty"`
+	Type      string             `json:"type"`
+	ID        string             `json:"id,omitempty"`
+	Role      string             `json:"role,omitempty"`
+	Content   []ResponsesContent `json:"content,omitempty"`
+	CallID    string             `json:"call_id,omitempty"`
+	Name      string             `json:"name,omitempty"`
+	Arguments string             `json:"arguments,omitempty"`
 }
 
 // ResponsesContent represents content within an output item.
@@ -68,11 +68,11 @@ type ResponsesUsage struct {
 
 // ResponsesChunk represents a streaming chunk from the Responses API.
 type ResponsesChunk struct {
-	Type    string            `json:"type"`
-	ID      string            `json:"id,omitempty"`
-	Delta   string            `json:"delta,omitempty"`
-	Output  []ResponsesOutput `json:"output,omitempty"`
-	Usage   *ResponsesUsage   `json:"usage,omitempty"`
+	Type   string            `json:"type"`
+	ID     string            `json:"id,omitempty"`
+	Delta  string            `json:"delta,omitempty"`
+	Output []ResponsesOutput `json:"output,omitempty"`
+	Usage  *ResponsesUsage   `json:"usage,omitempty"`
 }
 
 // Google Gemini API types.
@@ -80,16 +80,16 @@ type ResponsesChunk struct {
 
 // GeminiRequest represents a request to the Gemini API.
 type GeminiRequest struct {
-	Contents         []GeminiContent          `json:"contents"`
-	GenerationConfig *GeminiGenerationConfig  `json:"generationConfig,omitempty"`
-	Tools            []GeminiTool             `json:"tools,omitempty"`
-	Stream           bool                     `json:"stream,omitempty"`
+	Contents         []GeminiContent         `json:"contents"`
+	GenerationConfig *GeminiGenerationConfig `json:"generationConfig,omitempty"`
+	Tools            []GeminiTool            `json:"tools,omitempty"`
+	Stream           bool                    `json:"stream,omitempty"`
 }
 
 // GeminiContent represents a single content item.
 type GeminiContent struct {
-	Role  string         `json:"role"`
-	Parts []GeminiPart   `json:"parts"`
+	Role  string       `json:"role"`
+	Parts []GeminiPart `json:"parts"`
 }
 
 // GeminiPart represents a part of a content item.
@@ -99,8 +99,8 @@ type GeminiPart struct {
 
 // GeminiGenerationConfig controls generation parameters.
 type GeminiGenerationConfig struct {
-	Temperature float64 `json:"temperature,omitempty"`
-	MaxOutputTokens int `json:"maxOutputTokens,omitempty"`
+	Temperature     float64 `json:"temperature,omitempty"`
+	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
 }
 
 // GeminiTool represents a tool definition.
@@ -117,14 +117,14 @@ type GeminiFunctionDeclaration struct {
 
 // GeminiResponse represents a response from the Gemini API.
 type GeminiResponse struct {
-	Candidates     []GeminiCandidate  `json:"candidates"`
-	UsageMetadata  *GeminiUsage       `json:"usageMetadata,omitempty"`
+	Candidates    []GeminiCandidate `json:"candidates"`
+	UsageMetadata *GeminiUsage      `json:"usageMetadata,omitempty"`
 }
 
 // GeminiCandidate represents a response candidate.
 type GeminiCandidate struct {
-	Content GeminiContent `json:"content"`
-	FinishReason string  `json:"finishReason,omitempty"`
+	Content      GeminiContent `json:"content"`
+	FinishReason string        `json:"finishReason,omitempty"`
 }
 
 // GeminiUsage represents token usage in a Gemini response.
