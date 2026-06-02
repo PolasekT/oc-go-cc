@@ -55,7 +55,7 @@ func NewOpenCodeClient(atomic *config.AtomicConfig) *OpenCodeClient {
 // This includes both Go models (minimax) and Zen models (claude, qwen).
 func IsAnthropicModel(modelID string) bool {
 	switch modelID {
-	case "minimax-m2.5", "minimax-m2.7":
+	case "minimax-m2.5", "minimax-m2.7", "qwen3.7-max":
 		return true
 	default:
 		return isZenAnthropicModel(modelID)
@@ -181,7 +181,12 @@ func (c *OpenCodeClient) ChatCompletion(
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
+	// Anthropic endpoint uses x-api-key; OpenAI endpoint uses Bearer
+	if IsAnthropicModel(modelID) {
+		httpReq.Header.Set("x-api-key", endpoint.APIKey)
+	} else {
+		httpReq.Header.Set("Authorization", "Bearer "+endpoint.APIKey)
+	}
 
 	if req.Stream != nil && *req.Stream {
 		httpReq.Header.Set("Accept", "text/event-stream")
