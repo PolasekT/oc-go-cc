@@ -40,6 +40,7 @@ func NewOpenCodeClient(atomic *config.AtomicConfig) *OpenCodeClient {
 		IdleConnTimeout:     90 * time.Second,
 		MaxConnsPerHost:     50,
 		DisableKeepAlives:   false,
+		Proxy:               http.ProxyFromEnvironment,
 	}
 
 	return &OpenCodeClient{
