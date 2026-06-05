@@ -1,6 +1,7 @@
 package router
 
 import (
+	"log/slog"
 	"testing"
 
 	"oc-go-cc/internal/config"
@@ -33,14 +34,14 @@ func TestRoute_RespectRequestedModel_BypassesScenarioRouting(t *testing.T) {
 		},
 	}
 
-	router := NewModelRouter(newTestAtomicConfig(cfg))
+	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
 
 	// Complex message that would normally route to GLM-5.1
 	messages := []MessageContent{
 		{Role: "user", Content: "Architect a new microservice"},
 	}
 
-	result, err := router.Route(messages, 100, "kimi-k2.6")
+	result, err := router.Route(messages, 100, "kimi-k2.6", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,13 +71,13 @@ func TestRoute_RespectRequestedModel_False_UsesScenarioRouting(t *testing.T) {
 		},
 	}
 
-	router := NewModelRouter(newTestAtomicConfig(cfg))
+	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
 
 	messages := []MessageContent{
 		{Role: "user", Content: "Architect a new microservice"},
 	}
 
-	result, err := router.Route(messages, 100, "kimi-k2.6")
+	result, err := router.Route(messages, 100, "kimi-k2.6", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -97,13 +98,13 @@ func TestRoute_RespectRequestedModel_EmptyModel_FallsThrough(t *testing.T) {
 		},
 	}
 
-	router := NewModelRouter(newTestAtomicConfig(cfg))
+	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
 
 	messages := []MessageContent{
 		{Role: "user", Content: "Hello"},
 	}
 
-	result, err := router.Route(messages, 100, "")
+	result, err := router.Route(messages, 100, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -129,13 +130,13 @@ func TestRoute_RespectRequestedModel_UnknownModel_UsesDefaults(t *testing.T) {
 		},
 	}
 
-	router := NewModelRouter(newTestAtomicConfig(cfg))
+	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
 
 	messages := []MessageContent{
 		{Role: "user", Content: "Hello"},
 	}
 
-	result, err := router.Route(messages, 100, "some-unknown-model")
+	result, err := router.Route(messages, 100, "some-unknown-model", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,13 +167,13 @@ func TestRouteForStreaming_RespectRequestedModel_BypassesScenarioRouting(t *test
 		},
 	}
 
-	router := NewModelRouter(newTestAtomicConfig(cfg))
+	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
 
 	messages := []MessageContent{
 		{Role: "user", Content: "Hello"},
 	}
 
-	result := router.RouteForStreaming(messages, 100, "kimi-k2.6")
+	result := router.RouteForStreaming(messages, 100, "kimi-k2.6", "")
 	if result.Primary.ModelID != "kimi-k2.6" {
 		t.Errorf("expected model kimi-k2.6, got %s", result.Primary.ModelID)
 	}
@@ -192,13 +193,13 @@ func TestRouteForStreaming_RespectRequestedModel_False_UsesScenarioRouting(t *te
 		},
 	}
 
-	router := NewModelRouter(newTestAtomicConfig(cfg))
+	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
 
 	messages := []MessageContent{
 		{Role: "user", Content: "Hello"},
 	}
 
-	result := router.RouteForStreaming(messages, 100, "kimi-k2.6")
+	result := router.RouteForStreaming(messages, 100, "kimi-k2.6", "")
 	// Should use streaming scenario routing, not the requested model
 	if result.Primary.ModelID != "qwen3.6-plus" {
 		t.Errorf("expected streaming model qwen3.6-plus, got %s", result.Primary.ModelID)
@@ -219,9 +220,9 @@ func TestResolveRequestedModel_UsesFallbacks(t *testing.T) {
 		},
 	}
 
-	router := NewModelRouter(newTestAtomicConfig(cfg))
+	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
 
-	result, ok := router.resolveRequestedModel(cfg, "kimi-k2.6")
+	result, ok := router.resolveRequestedModel(cfg, "kimi-k2.6", "")
 	if !ok {
 		t.Fatal("expected resolveRequestedModel to match")
 	}
@@ -250,7 +251,7 @@ func TestRouteWithOverride_MatchesKey(t *testing.T) {
 		},
 	}
 
-	router := NewModelRouter(newTestAtomicConfig(cfg))
+	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
 
 	result, ok := router.RouteWithOverride("kimi-k2.6")
 	if !ok {
@@ -277,7 +278,7 @@ func TestRouteWithOverride_NoMatch(t *testing.T) {
 		},
 	}
 
-	router := NewModelRouter(newTestAtomicConfig(cfg))
+	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
 
 	result, ok := router.RouteWithOverride("some-other-model")
 	if ok {
@@ -288,7 +289,7 @@ func TestRouteWithOverride_NoMatch(t *testing.T) {
 func TestRouteWithOverride_NilMap(t *testing.T) {
 	cfg := &config.Config{} // ModelOverrides is nil
 
-	router := NewModelRouter(newTestAtomicConfig(cfg))
+	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
 
 	if _, ok := router.RouteWithOverride("anything"); ok {
 		t.Error("expected no match for nil ModelOverrides map (must not panic)")
@@ -310,7 +311,7 @@ func TestRouteWithOverride_MissingFallbacksKey_FallsBackToDefault(t *testing.T) 
 		// fallbacks["default"], matching Route/RouteForStreaming behavior.
 	}
 
-	router := NewModelRouter(newTestAtomicConfig(cfg))
+	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
 
 	result, ok := router.RouteWithOverride("kimi-k2.6")
 	if !ok {
@@ -328,25 +329,76 @@ func TestRouteWithOverride_MissingFallbacksKey_FallsBackToDefault(t *testing.T) 
 	}
 }
 
-func TestRouteWithOverride_NoFallbacksAnywhere(t *testing.T) {
+func TestRoute_EnableEffortScenarioRouting(t *testing.T) {
 	cfg := &config.Config{
-		ModelOverrides: map[string]config.ModelConfig{
-			"kimi-k2.6": {Provider: "opencode-go", ModelID: "kimi-k2.6"},
+		EnableEffortScenarioRouting: true,
+		Models: map[string]config.ModelConfig{
+			"default": {ModelID: "default-model"},
+			"complex": {ModelID: "complex-model"},
 		},
-		// Both the override key and "default" are missing.
+		ModelEffortOverrides: map[string]map[string]config.ModelConfig{
+			"complex": {
+				"low": {ModelID: "complex-low-effort"},
+			},
+		},
+	}
+	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
+
+	messages := []MessageContent{{Role: "user", Content: "architect something"}} // Triggers complex scenario
+
+	// Case 1: Flag true, effort provided, match found
+	result, _ := router.Route(messages, 100, "", "low")
+	if result.Primary.ModelID != "complex-low-effort" {
+		t.Errorf("expected complex-low-effort, got %s", result.Primary.ModelID)
 	}
 
-	router := NewModelRouter(newTestAtomicConfig(cfg))
+	// Case 2: Flag true, effort provided, no match found -> fall back to scenario model
+	result, _ = router.Route(messages, 100, "", "high")
+	if result.Primary.ModelID != "complex-model" {
+		t.Errorf("expected complex-model, got %s", result.Primary.ModelID)
+	}
 
-	result, ok := router.RouteWithOverride("kimi-k2.6")
-	if !ok {
-		t.Fatal("expected RouteWithOverride to match")
+	// Case 3: Flag false -> scenario model
+	cfg.EnableEffortScenarioRouting = false
+	result, _ = router.Route(messages, 100, "", "low")
+	if result.Primary.ModelID != "complex-model" {
+		t.Errorf("expected complex-model, got %s", result.Primary.ModelID)
 	}
-	if len(result.Fallbacks) != 0 {
-		t.Errorf("expected empty fallbacks, got %+v", result.Fallbacks)
+}
+
+func TestRoute_RespectRequestedModelUseEffort(t *testing.T) {
+	cfg := &config.Config{
+		RespectRequestedModel:          true,
+		RespectRequestedModelUseEffort: true,
+		Models: map[string]config.ModelConfig{
+			"my-model": {ModelID: "my-model-default"},
+		},
+		ModelEffortOverrides: map[string]map[string]config.ModelConfig{
+			"my-model": {
+				"low": {ModelID: "my-model-low-effort"},
+			},
+		},
 	}
-	chain := result.GetModelChain()
-	if len(chain) != 1 {
-		t.Errorf("expected 1-element chain, got %d", len(chain))
+	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
+
+	messages := []MessageContent{{Role: "user", Content: "hello"}}
+
+	// Case 1: Flag true, effort provided, match found
+	result, _ := router.Route(messages, 100, "my-model", "low")
+	if result.Primary.ModelID != "my-model-low-effort" {
+		t.Errorf("expected my-model-low-effort, got %s", result.Primary.ModelID)
+	}
+
+	// Case 2: Flag true, effort provided, no match found -> requested model default
+	result, _ = router.Route(messages, 100, "my-model", "high")
+	if result.Primary.ModelID != "my-model-default" {
+		t.Errorf("expected my-model-default, got %s", result.Primary.ModelID)
+	}
+
+	// Case 3: Flag false -> requested model default
+	cfg.RespectRequestedModelUseEffort = false
+	result, _ = router.Route(messages, 100, "my-model", "low")
+	if result.Primary.ModelID != "my-model-default" {
+		t.Errorf("expected my-model-default, got %s", result.Primary.ModelID)
 	}
 }

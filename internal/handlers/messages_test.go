@@ -101,8 +101,10 @@ func TestAppendUniqueModels_EmptyBase(t *testing.T) {
 // are nil — these tests only exercise buildModelChain, which uses modelRouter.
 func newTestMessagesHandler(t *testing.T, cfg *config.Config) *MessagesHandler {
 	t.Helper()
+	atomic := config.NewAtomicConfig(cfg, "/tmp/test-config.json")
 	return &MessagesHandler{
-		modelRouter: router.NewModelRouter(config.NewAtomicConfig(cfg, "/tmp/test-config.json")),
+		atomic:      atomic,
+		modelRouter: router.NewModelRouter(atomic, slog.Default()),
 		logger:      slog.Default(),
 	}
 }
@@ -129,7 +131,7 @@ func TestBuildModelChain_NoOverride_UsesScenarioRoute(t *testing.T) {
 	}
 	h := newTestMessagesHandler(t, cfg)
 
-	chain, result, err := h.buildModelChain("", nil, 100, false)
+	chain, result, err := h.buildModelChain("", "", nil, 100, false, slog.Default())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,7 +168,7 @@ func TestBuildModelChain_Override_AppendsScenarioChainDeduped(t *testing.T) {
 	}
 	h := newTestMessagesHandler(t, cfg)
 
-	chain, result, err := h.buildModelChain("kimi-k2.6", nil, 100, false)
+	chain, result, err := h.buildModelChain("kimi-k2.6", "", nil, 100, false, slog.Default())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -209,7 +211,7 @@ func TestBuildModelChain_Override_AppendsUniqueScenarioModels(t *testing.T) {
 	}
 	h := newTestMessagesHandler(t, cfg)
 
-	chain, result, err := h.buildModelChain("claude-sonnet-4.5", nil, 100, false)
+	chain, result, err := h.buildModelChain("claude-sonnet-4.5", "", nil, 100, false, slog.Default())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -247,7 +249,7 @@ func TestBuildModelChain_Override_NoMatchingFallbacksKey(t *testing.T) {
 	}
 	h := newTestMessagesHandler(t, cfg)
 
-	chain, _, err := h.buildModelChain("claude-sonnet-4.5", nil, 100, false)
+	chain, _, err := h.buildModelChain("claude-sonnet-4.5", "", nil, 100, false, slog.Default())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -281,7 +283,7 @@ func TestBuildModelChain_StreamingFlag_UsesStreamingRoute(t *testing.T) {
 	h := newTestMessagesHandler(t, cfg)
 
 	// Non-streaming: scenario is default
-	_, resultNonStream, _ := h.buildModelChain("claude-sonnet-4.5", nil, 100, false)
+	_, resultNonStream, _ := h.buildModelChain("claude-sonnet-4.5", "", nil, 100, false, slog.Default())
 	if resultNonStream.Scenario != router.ScenarioOverride {
 		t.Errorf("non-streaming scenario = %s, want %s", resultNonStream.Scenario, router.ScenarioOverride)
 	}
@@ -289,7 +291,7 @@ func TestBuildModelChain_StreamingFlag_UsesStreamingRoute(t *testing.T) {
 	// Streaming: override still wins, but the safety-net uses fast route.
 	// Chain: [claude-sonnet-4.5 (override), mimo-v2-pro (default fallback),
 	//         qwen3.6-plus (fast scenario primary), qwen3.5-plus (fast scenario fallback)]
-	chain, _, _ := h.buildModelChain("claude-sonnet-4.5", nil, 100, true)
+	chain, _, _ := h.buildModelChain("claude-sonnet-4.5", "", nil, 100, true, slog.Default())
 	want := []string{"claude-sonnet-4.5", "mimo-v2-pro", "qwen3.6-plus", "qwen3.5-plus"}
 	if got := chainIDs(chain); !equalStrings(got, want) {
 		t.Errorf("streaming chain = %v, want %v (safety-net should use RouteForStreaming)", got, want)
@@ -313,7 +315,7 @@ func TestBuildModelChain_UnknownModel_FallsThroughToScenarioRoute(t *testing.T) 
 	}
 	h := newTestMessagesHandler(t, cfg)
 
-	chain, result, err := h.buildModelChain("completely-unknown", nil, 100, false)
+	chain, result, err := h.buildModelChain("completely-unknown", "", nil, 100, false, slog.Default())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -323,6 +325,53 @@ func TestBuildModelChain_UnknownModel_FallsThroughToScenarioRoute(t *testing.T) 
 	}
 	if result.Scenario == router.ScenarioOverride {
 		t.Errorf("scenario should not be override, got %s", result.Scenario)
+	}
+}
+
+func TestBuildModelChain_EffortOverride_TakesPrecedence(t *testing.T) {
+	cfg := &config.Config{
+		RespectRequestedModelUseEffort: true,
+		EnableEffortScenarioRouting:    true,
+		Models: map[string]config.ModelConfig{
+			"default": {Provider: "opencode-go", ModelID: "kimi-k2.6"},
+		},
+		Fallbacks: map[string][]config.ModelConfig{
+			"default": {{ModelID: "mimo-v2-pro"}},
+		},
+		ModelEffortOverrides: map[string]map[string]config.ModelConfig{
+			"mini": {
+				"low": {Provider: "opencode-go", ModelID: "low-effort-model"},
+			},
+		},
+		ModelOverrides: map[string]config.ModelConfig{
+			"mini": {Provider: "opencode-go", ModelID: "regular-override-model"},
+		},
+	}
+	h := newTestMessagesHandler(t, cfg)
+
+	// Case 1: Effort matches effort override
+	chain, result, err := h.buildModelChain("mini", "low", nil, 100, false, slog.Default())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Expected: [low-effort-model, mimo-v2-pro (default fallback), kimi-k2.6 (scenario primary)]
+	want := []string{"low-effort-model", "mimo-v2-pro", "kimi-k2.6"}
+	if got := chainIDs(chain); !equalStrings(got, want) {
+		t.Errorf("effort override chain = %v, want %v", got, want)
+	}
+	if result.Primary.ModelID != "low-effort-model" {
+		t.Errorf("primary = %s, want %s", result.Primary.ModelID, "low-effort-model")
+	}
+
+	// Case 2: Effort does not match effort override, falls back to regular override
+	chain, result, err = h.buildModelChain("mini", "high", nil, 100, false, slog.Default())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Expected: [regular-override-model, mimo-v2-pro, kimi-k2.6]
+	want = []string{"regular-override-model", "mimo-v2-pro", "kimi-k2.6"}
+	if got := chainIDs(chain); !equalStrings(got, want) {
+		t.Errorf("fallback to model override chain = %v, want %v", got, want)
 	}
 }
 

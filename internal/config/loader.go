@@ -123,6 +123,21 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("OC_GO_CC_OPENCODE_ZEN_URL"); v != "" {
 		cfg.OpenCodeZen.BaseURL = v
 	}
+	if v := os.Getenv("OC_GO_CC_ENABLE_EFFORT_ROUTING"); v != "" {
+		cfg.EnableEffortScenarioRouting = strings.ToLower(v) == "true"
+	}
+	if v := os.Getenv("OC_GO_CC_RESPECT_MODEL_EFFORT"); v != "" {
+		cfg.RespectRequestedModelUseEffort = strings.ToLower(v) == "true"
+	}
+	if v := os.Getenv("OC_GO_CC_ANTH_COMP_URL"); v != "" {
+		cfg.AnthropicCompatible.BaseURL = v
+	}
+	if v := os.Getenv("OC_GO_CC_ANTH_COMP_ANTHROPIC_URL"); v != "" {
+		cfg.AnthropicCompatible.AnthropicBaseURL = v
+	}
+	if v := os.Getenv("OC_GO_CC_ANTH_COMP_API_KEY"); v != "" {
+		cfg.AnthropicCompatible.APIKey = v
+	}
 	if v := os.Getenv("OC_GO_CC_LOG_LEVEL"); v != "" {
 		cfg.Logging.Level = v
 	}
@@ -160,6 +175,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.OpenCodeZen.TimeoutMs == 0 {
 		cfg.OpenCodeZen.TimeoutMs = defaultTimeoutMs
 	}
+	if cfg.AnthropicCompatible.TimeoutMs == 0 {
+		cfg.AnthropicCompatible.TimeoutMs = defaultTimeoutMs
+	}
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = defaultLogLevel
 	}
@@ -180,6 +198,25 @@ func validate(cfg *Config) error {
 	if err := validateModelOverrides(cfg.ModelOverrides); err != nil {
 		return err
 	}
+	if err := validateModelEffortOverrides(cfg.ModelEffortOverrides); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateModelEffortOverrides ensures each effort override entry has a non-empty model_id
+// and a recognized provider.
+func validateModelEffortOverrides(overrides map[string]map[string]ModelConfig) error {
+	for modelKey, effortMap := range overrides {
+		for effortKey, mc := range effortMap {
+			if mc.ModelID == "" {
+				return fmt.Errorf("model_effort_overrides[%q][%q] is missing required field model_id", modelKey, effortKey)
+			}
+			if mc.Provider != "" && mc.Provider != "opencode-go" && mc.Provider != "opencode-zen" && mc.Provider != "anth-comp" {
+				return fmt.Errorf("model_effort_overrides[%q][%q] has invalid provider %q (must be \"opencode-go\", \"opencode-zen\" or \"anth-comp\")", modelKey, effortKey, mc.Provider)
+			}
+		}
+	}
 	return nil
 }
 
@@ -192,8 +229,8 @@ func validateModelOverrides(overrides map[string]ModelConfig) error {
 		if mc.ModelID == "" {
 			return fmt.Errorf("model_overrides[%q] is missing required field model_id", key)
 		}
-		if mc.Provider != "" && mc.Provider != "opencode-go" && mc.Provider != "opencode-zen" {
-			return fmt.Errorf("model_overrides[%q] has invalid provider %q (must be \"opencode-go\" or \"opencode-zen\")", key, mc.Provider)
+		if mc.Provider != "" && mc.Provider != "opencode-go" && mc.Provider != "opencode-zen" && mc.Provider != "anth-comp" {
+			return fmt.Errorf("model_overrides[%q] has invalid provider %q (must be \"opencode-go\", \"opencode-zen\" or \"anth-comp\")", key, mc.Provider)
 		}
 	}
 	return nil

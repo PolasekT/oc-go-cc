@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -16,18 +17,21 @@ import (
 )
 
 const (
-	ProviderOpenCodeGo  = "opencode-go"
-	ProviderOpenCodeZen = "opencode-zen"
+	ProviderOpenCodeGo           = "opencode-go"
+	ProviderOpenCodeZen          = "opencode-zen"
+	ProviderAnthropicCompatible = "anth-comp"
+
 )
 
 // OpenCodeClient handles communication with OpenCode Go and Zen APIs.
 type OpenCodeClient struct {
 	atomic     *config.AtomicConfig
 	httpClient *http.Client
+	logger     *slog.Logger
 }
 
 // NewOpenCodeClient creates a new OpenCode client.
-func NewOpenCodeClient(atomic *config.AtomicConfig) *OpenCodeClient {
+func NewOpenCodeClient(atomic *config.AtomicConfig, logger *slog.Logger) *OpenCodeClient {
 	cfg := atomic.Get()
 	timeout := time.Duration(cfg.OpenCodeGo.TimeoutMs) * time.Millisecond
 	if timeout == 0 {
@@ -45,6 +49,7 @@ func NewOpenCodeClient(atomic *config.AtomicConfig) *OpenCodeClient {
 
 	return &OpenCodeClient{
 		atomic: atomic,
+		logger: logger,
 		httpClient: &http.Client{
 			Timeout:   timeout,
 			Transport: transport,
@@ -84,6 +89,11 @@ func Provider(model config.ModelConfig) string {
 // IsZen returns true if the model uses the OpenCode Zen provider.
 func IsZen(model config.ModelConfig) bool {
 	return Provider(model) == ProviderOpenCodeZen
+}
+
+// IsAnthropicCompatible returns true if the model uses the Anthropic Compatible provider.
+func IsAnthropicCompatible(model config.ModelConfig) bool {
+	return Provider(model) == ProviderAnthropicCompatible
 }
 
 // EndpointType determines which Zen endpoint format to use.
@@ -149,6 +159,15 @@ func (c *OpenCodeClient) getEndpoint(modelID string, modelConfig config.ModelCon
 		}
 	}
 
+	if IsAnthropicCompatible(modelConfig) {
+		ac := cfg.AnthropicCompatible
+		apiKey := ac.APIKey
+		if apiKey == "" {
+			apiKey = cfg.APIKey
+		}
+		return endpointConfig{BaseURL: ac.AnthropicBaseURL, APIKey: apiKey}
+	}
+
 	// Default: OpenCode Go
 	if IsAnthropicModel(modelID) {
 		return endpointConfig{BaseURL: cfg.OpenCodeGo.AnthropicBaseURL, APIKey: cfg.APIKey}
@@ -160,6 +179,25 @@ func (c *OpenCodeClient) getEndpoint(modelID string, modelConfig config.ModelCon
 type endpointConfig struct {
 	BaseURL string
 	APIKey  string
+}
+
+// GetTimeout returns the configured timeout for the provider.
+func (c *OpenCodeClient) GetTimeout(model config.ModelConfig) time.Duration {
+	cfg := c.atomic.Get()
+	var ms int
+
+	if IsZen(model) {
+		ms = cfg.OpenCodeZen.TimeoutMs
+	} else if IsAnthropicCompatible(model) {
+		ms = cfg.AnthropicCompatible.TimeoutMs
+	} else {
+		ms = cfg.OpenCodeGo.TimeoutMs
+	}
+
+	if ms <= 0 {
+		return 5 * time.Minute
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 // ChatCompletion sends a chat completion request.
@@ -264,12 +302,20 @@ func (c *OpenCodeClient) SendAnthropicRequest(
 	cfg := c.atomic.Get()
 	var baseURL string
 
+	apiKey := cfg.APIKey
+
 	if IsZen(modelConfig) {
 		baseURL = cfg.OpenCodeZen.AnthropicBaseURL
+	} else if IsAnthropicCompatible(modelConfig) {
+		baseURL = cfg.AnthropicCompatible.AnthropicBaseURL
+		if cfg.AnthropicCompatible.APIKey != "" {
+			apiKey = cfg.AnthropicCompatible.APIKey
+		}
 	} else {
 		baseURL = cfg.OpenCodeGo.AnthropicBaseURL
 	}
-	apiKey := cfg.APIKey
+
+	c.logger.Debug("sending request to upstream", "url", baseURL)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, bytes.NewReader(body))
 	if err != nil {

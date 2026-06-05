@@ -14,6 +14,10 @@ Override with `OC_GO_CC_CONFIG` environment variable.
   "host": "127.0.0.1",
   "port": 3456,
   "hot_reload": false,
+  "enable_streaming_scenario_routing": false,
+  "respect_requested_model": false,
+  "enable_effort_scenario_routing": false,
+  "respect_requested_model_use_effort": false,
 
   "models": {
     "default": {
@@ -116,6 +120,14 @@ oc-go-cc supports two providers for upstream API calls:
   - **Google Gemini** (`/v1/models/{id}`) — Gemini models
 - Set `"provider": "opencode-zen"` in your model config to use Zen
 
+### Anthropic Compatible (`anth_comp`)
+
+- Transparent passthrough provider for Anthropic-compatible APIs
+- Forwards incoming requests as-is without transformation
+- Requires `base_url`, `anthropic_base_url`, and optional `api_key`
+- Set `"provider": "anth-comp"` in your model config to use this provider
+
+
 ## Environment Variables
 
 Environment variables override config file values. Config values also support `${VAR}` interpolation.
@@ -128,6 +140,10 @@ Environment variables override config file values. Config values also support `$
 | `OC_GO_CC_PORT`         | Proxy listen port                           | `3456`                                           |
 | `OC_GO_CC_OPENCODE_URL` | OpenCode Go API endpoint                    | `https://opencode.ai/zen/go/v1/chat/completions` |
 | `OC_GO_CC_OPENCODE_ZEN_URL` | OpenCode Zen API endpoint              | `https://opencode.ai/zen/v1/chat/completions`    |
+| `OC_GO_CC_ENABLE_EFFORT_ROUTING` | Enable effort-based scenario routing | `false` |
+| `OC_GO_CC_RESPECT_MODEL_EFFORT` | Use effort with respect_requested_model | `false` |
+| `OC_GO_CC_ANTH_COMP_URL` | Anth_comp API endpoint                     | —                                                |
+| `OC_GO_CC_ANTH_COMP_API_KEY` | Anth_comp specific API key             | —                                                |
 | `OC_GO_CC_LOG_LEVEL`    | Log level: `debug`, `info`, `warn`, `error` | `info`                                           |
 
 ## Hot Reload
@@ -208,8 +224,32 @@ Each entry accepts the same fields as a `ModelConfig` (`provider`, `model_id`, `
 
 When a request arrives, the proxy selects a model chain using the following order:
 
-1. **`model_overrides[<model>]`** — if the request's `model` field has an entry, use it as the primary and append the scenario chain as a safety net.
-2. **`respect_requested_model`** — if enabled and `models[<model>]` is configured, use the requested model with default fallbacks.
-3. **Scenario routing** — fall back to the scenario chain (`default`, `background`, `think`, `complex`, `long_context`, `fast`).
+1. **`model_effort_overrides[<model>][<effort>]`** — if the request's `model` and `effort` (from `output_config`) match, this takes top precedence.
+2. **`model_overrides[<model>]`** — if the request's `model` field has an entry, use it as the primary and append the scenario chain as a safety net.
+3. **`respect_requested_model`** — if enabled and `models[<model>]` is configured, use the requested model with default fallbacks.
+4. **Scenario routing** — fall back to the scenario chain (`default`, `background`, `think`, `complex`, `long_context`, `fast`).
+
+## Model Effort Overrides (`model_effort_overrides`)
+
+`model_effort_overrides` allows you to select a different model based on the `effort` parameter provided in the client request (e.g. `output_config: {"effort": "low"}`). This is particularly useful for models that support multiple reasoning effort levels.
+
+```json
+{
+  "model_effort_overrides": {
+    "reasoning-model": {
+      "low": {
+        "provider": "opencode-go",
+        "model_id": "low-effort-model"
+      },
+      "high": {
+        "provider": "anth-comp",
+        "model_id": "high-effort-model"
+      }
+    }
+  }
+}
+```
+
+The mapping is `[model_name][effort_level]`. Supported effort levels typically include `low`, `medium`, `high`, `xhigh`, and `max`.
 
 > **Trust model:** any client whose requests flow through the proxy can select from the configured `model_overrides` set without additional authentication. If you run the proxy as a shared service, treat `model_overrides` as a privileged allowlist.

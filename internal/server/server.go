@@ -47,12 +47,13 @@ func NewServer(atomic *config.AtomicConfig) (*Server, error) {
 	// Create metrics
 	metrics := metrics.New()
 
-	openCodeClient := client.NewOpenCodeClient(atomic)
-	modelRouter := router.NewModelRouter(atomic)
+	openCodeClient := client.NewOpenCodeClient(atomic, logger)
+	modelRouter := router.NewModelRouter(atomic, logger)
 	fallbackHandler := router.NewFallbackHandler(logger, 3, 30*time.Second)
 
 	// Create handlers.
 	messagesHandler := handlers.NewMessagesHandler(
+		atomic,
 		openCodeClient,
 		modelRouter,
 		fallbackHandler,

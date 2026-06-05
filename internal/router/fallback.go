@@ -3,6 +3,7 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -170,6 +171,7 @@ func (h *FallbackHandler) getCircuitBreaker(modelID string) *CircuitBreaker {
 func (h *FallbackHandler) ExecuteWithFallback(
 	ctx context.Context,
 	models []config.ModelConfig,
+	reqLogger *slog.Logger,
 	executor func(context.Context, config.ModelConfig) ([]byte, error),
 ) (*FallbackResult, []byte, error) {
 	totalModels := len(models)
@@ -179,7 +181,7 @@ func (h *FallbackHandler) ExecuteWithFallback(
 
 		// Skip models with open circuit breakers
 		if !cb.AllowRequest() {
-			h.logger.Info("circuit breaker open, skipping model",
+			reqLogger.Info("circuit breaker open, skipping model",
 				"model", model.ModelID,
 				"attempt", i+1,
 				"total", totalModels,
@@ -187,7 +189,7 @@ func (h *FallbackHandler) ExecuteWithFallback(
 			continue
 		}
 
-		h.logger.Info("attempting model",
+		reqLogger.Info("attempting model",
 			"model", model.ModelID,
 			"attempt", i+1,
 			"total", totalModels,
@@ -196,9 +198,20 @@ func (h *FallbackHandler) ExecuteWithFallback(
 		body, err := executor(ctx, model)
 		if err == nil {
 			cb.RecordSuccess()
-			h.logger.Info("model succeeded",
+
+			var tokenStats struct {
+				Usage struct {
+					InputTokens  int `json:"input_tokens"`
+					OutputTokens int `json:"output_tokens"`
+				} `json:"usage"`
+			}
+			_ = json.Unmarshal(body, &tokenStats)
+
+			reqLogger.Info("model succeeded",
 				"model", model.ModelID,
 				"attempt", i+1,
+				"in_toks", tokenStats.Usage.InputTokens,
+				"out_toks", tokenStats.Usage.OutputTokens,
 			)
 			return &FallbackResult{
 				ModelID:     model.ModelID,
@@ -209,7 +222,7 @@ func (h *FallbackHandler) ExecuteWithFallback(
 		}
 
 		cb.RecordFailure()
-		h.logger.Warn("model failed, trying fallback",
+		reqLogger.Warn("model failed, trying fallback",
 			"model", model.ModelID,
 			"error", err,
 			"remaining", totalModels-i-1,

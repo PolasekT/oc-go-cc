@@ -359,11 +359,122 @@ func TestValidateModelOverrides_AllValidProviders(t *testing.T) {
 		ModelOverrides: map[string]ModelConfig{
 			"a": {Provider: "opencode-go", ModelID: "m1"},
 			"b": {Provider: "opencode-zen", ModelID: "m2"},
-			"c": {ModelID: "m3"},
+			"c": {Provider: "anth-comp", ModelID: "m3"},
+			"d": {ModelID: "m4"},
 		},
 	}
 	if err := validate(cfg); err != nil {
 		t.Errorf("expected no validation error, got %v", err)
+	}
+}
+
+func TestAnthCompEnvOverrides(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	cfgJSON := `{"api_key": "file-key"}`
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	_ = os.Setenv("OC_GO_CC_CONFIG", cfgPath)
+	_ = os.Setenv("OC_GO_CC_API_KEY", "global-key")
+	_ = os.Setenv("OC_GO_CC_ANTH_COMP_URL", "https://anth-comp-url/v1")
+	_ = os.Setenv("OC_GO_CC_ANTH_COMP_API_KEY", "anth-comp-key")
+	defer func() {
+		_ = os.Unsetenv("OC_GO_CC_CONFIG")
+		_ = os.Unsetenv("OC_GO_CC_API_KEY")
+		_ = os.Unsetenv("OC_GO_CC_ANTH_COMP_URL")
+		_ = os.Unsetenv("OC_GO_CC_ANTH_COMP_API_KEY")
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.APIKey != "global-key" {
+		t.Errorf("APIKey = %q, want %q", cfg.APIKey, "global-key")
+	}
+	if cfg.AnthropicCompatible.BaseURL != "https://anth-comp-url/v1" {
+		t.Errorf("AnthropicCompatible.BaseURL = %q, want %q", cfg.AnthropicCompatible.BaseURL, "https://anth-comp-url/v1")
+	}
+	if cfg.AnthropicCompatible.APIKey != "anth-comp-key" {
+		t.Errorf("AnthropicCompatible.APIKey = %q, want %q", cfg.AnthropicCompatible.APIKey, "anth-comp-key")
+	}
+}
+
+
+func TestValidateModelEffortOverrides_AllValidProviders(t *testing.T) {
+	cfg := &Config{
+		APIKey: "test",
+		ModelEffortOverrides: map[string]map[string]ModelConfig{
+			"mini": {
+				"low":  {Provider: "opencode-go", ModelID: "m1"},
+				"high": {Provider: "anth-comp", ModelID: "m2"},
+			},
+		},
+	}
+	if err := validate(cfg); err != nil {
+		t.Errorf("expected no validation error, got %v", err)
+	}
+}
+
+func TestValidateModelEffortOverrides_InvalidProvider(t *testing.T) {
+	cfg := &Config{
+		APIKey: "test",
+		ModelEffortOverrides: map[string]map[string]ModelConfig{
+			"mini": {
+				"low": {Provider: "unknown-provider", ModelID: "m1"},
+			},
+		},
+	}
+	if err := validate(cfg); err == nil {
+		t.Fatal("expected validation error for unknown provider in effort overrides, got nil")
+	}
+}
+
+func TestLoadJSON_WithModelEffortOverrides(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	cfgJSON := `{
+		"api_key": "test-key",
+		"model_effort_overrides": {
+			"mini": {
+				"low": {
+					"provider": "opencode-go",
+					"model_id": "low-model"
+				}
+			}
+		}
+	}`
+
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	_ = os.Setenv("OC_GO_CC_CONFIG", cfgPath)
+	defer func() { _ = os.Unsetenv("OC_GO_CC_CONFIG") }()
+	oldAPIKey := os.Getenv("OC_GO_CC_API_KEY")
+	_ = os.Unsetenv("OC_GO_CC_API_KEY")
+	defer func() { _ = os.Setenv("OC_GO_CC_API_KEY", oldAPIKey) }()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	effortMap, ok := cfg.ModelEffortOverrides["mini"]
+	if !ok {
+		t.Fatal("expected model_effort_overrides[\"mini\"] to be present")
+	}
+	entry, ok := effortMap["low"]
+	if !ok {
+		t.Fatal("expected model_effort_overrides[\"mini\"][\"low\"] to be present")
+	}
+	if entry.ModelID != "low-model" {
+		t.Errorf("ModelID = %q, want %q", entry.ModelID, "low-model")
 	}
 }
 

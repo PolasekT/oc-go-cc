@@ -1,6 +1,7 @@
 package client
 
 import (
+	"log/slog"
 	"testing"
 
 	"oc-go-cc/internal/config"
@@ -74,12 +75,71 @@ func TestProvider(t *testing.T) {
 			model:    config.ModelConfig{Provider: ProviderOpenCodeZen, ModelID: "test-model"},
 			expected: ProviderOpenCodeZen,
 		},
+		{
+			name:     "explicit anth-comp provider",
+			model:    config.ModelConfig{Provider: ProviderAnthropicCompatible, ModelID: "test-model"},
+			expected: ProviderAnthropicCompatible,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := Provider(tt.model); got != tt.expected {
 				t.Fatalf("Provider() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGetEndpoint_APIKeyPrioritization(t *testing.T) {
+	tests := []struct {
+		name        string
+		globalKey   string
+		providerKey string
+		wantAPIKey  string
+	}{
+		{
+			name:        "anth-comp uses its own API key",
+			globalKey:   "global-key",
+			providerKey: "anth-comp-key",
+			wantAPIKey:  "anth-comp-key",
+		},
+		{
+			name:        "anth-comp falls back to global API key if its own is empty",
+			globalKey:   "global-key",
+			providerKey: "",
+			wantAPIKey:  "global-key",
+		},
+		{
+			name:        "opencode-go uses global API key",
+			globalKey:   "global-key",
+			providerKey: "anth-comp-key",
+			wantAPIKey:  "global-key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				APIKey: tt.globalKey,
+				AnthropicCompatible: config.AnthropicCompatibleConfig{
+					AnthropicBaseURL: "https://anth-comp-url",
+					APIKey:           tt.providerKey,
+				},
+			}
+			atomic := config.NewAtomicConfig(cfg, "")
+			c := NewOpenCodeClient(atomic, slog.Default())
+
+			var mc config.ModelConfig
+			if tt.name == "opencode-go uses global API key" {
+				mc = config.ModelConfig{Provider: ProviderOpenCodeGo}
+			} else {
+				mc = config.ModelConfig{Provider: ProviderAnthropicCompatible}
+			}
+
+			endpoint := c.getEndpoint("test-model", mc)
+			if endpoint.APIKey != tt.wantAPIKey {
+				t.Fatalf("getEndpoint().APIKey = %v, want %v", endpoint.APIKey, tt.wantAPIKey)
 			}
 		})
 	}
@@ -112,6 +172,38 @@ func TestIsZen(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := IsZen(tt.model); got != tt.expected {
 				t.Fatalf("IsZen() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsAnthropicCompatible(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    config.ModelConfig
+		expected bool
+	}{
+		{
+			name:     "opencode-go is not anth-comp",
+			model:    config.ModelConfig{Provider: ProviderOpenCodeGo},
+			expected: false,
+		},
+		{
+			name:     "anth-comp is anth-comp",
+			model:    config.ModelConfig{Provider: ProviderAnthropicCompatible},
+			expected: true,
+		},
+		{
+			name:     "empty provider is not anth-comp",
+			model:    config.ModelConfig{},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsAnthropicCompatible(tt.model); got != tt.expected {
+				t.Fatalf("IsAnthropicCompatible() = %v, want %v", got, tt.expected)
 			}
 		})
 	}
