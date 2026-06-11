@@ -34,7 +34,7 @@ type RouteResult struct {
 // resolveRequestedModel checks if the user-specified model should override
 // scenario-based routing. Returns the route result and true if it matched,
 // or zero value and false if scenario routing should proceed normally.
-func (r *ModelRouter) resolveRequestedModel(cfg *config.Config, requestedModel string, effort string) (RouteResult, bool) {
+func (r *ModelRouter) resolveRequestedModel(cfg *config.Config, requestedModel string, effort string, tokenCount int) (RouteResult, bool) {
 	r.logger.Debug("resolving requested model", "model", requestedModel, "effort", effort, "respect", cfg.RespectRequestedModel, "use_effort", cfg.RespectRequestedModelUseEffort)
 	if !cfg.RespectRequestedModel || requestedModel == "" {
 		return RouteResult{}, false
@@ -43,9 +43,13 @@ func (r *ModelRouter) resolveRequestedModel(cfg *config.Config, requestedModel s
 	// If respect_requested_model_use_effort is enabled, try effort-based override first
 	if cfg.RespectRequestedModelUseEffort && effort != "" {
 		if result, ok := r.RouteWithEffortOverride(requestedModel, effort); ok {
-			r.logger.Debug("resolved requested model via effort override", "model", requestedModel, "effort", effort, "target", result.Primary.ModelID)
-			result.Reason = fmt.Sprintf("req_model_effort_override(%s.%s)", requestedModel, effort)
-			return result, true
+			if cfg.RespectRequestedModelUseContextThreshold && result.Primary.ContextThreshold > 0 && tokenCount > result.Primary.ContextThreshold {
+				r.logger.Info("requested model effort override context threshold exceeded, bypassing override", "model", requestedModel, "effort", effort, "tokens", tokenCount, "threshold", result.Primary.ContextThreshold)
+			} else {
+				r.logger.Debug("resolved requested model via effort override", "model", requestedModel, "effort", effort, "target", result.Primary.ModelID)
+				result.Reason = fmt.Sprintf("req_model_effort_override(%s.%s)", requestedModel, effort)
+				return result, true
+			}
 		}
 	}
 
@@ -67,6 +71,11 @@ func (r *ModelRouter) resolveRequestedModel(cfg *config.Config, requestedModel s
 		reason = fmt.Sprintf("req_model_unknown(%s)", requestedModel)
 	} else {
 		r.logger.Debug("requested model found in models config", "model", requestedModel, "target", primary.ModelID)
+	}
+
+	if cfg.RespectRequestedModelUseContextThreshold && primary.ContextThreshold > 0 && tokenCount > primary.ContextThreshold {
+		r.logger.Info("requested model context threshold exceeded, falling back to scenario routing", "model", requestedModel, "tokens", tokenCount, "threshold", primary.ContextThreshold)
+		return RouteResult{}, false
 	}
 
 	fallbacks := cfg.Fallbacks["default"]
@@ -124,7 +133,7 @@ func (r *ModelRouter) RouteWithEffortOverride(requestedModel string, effort stri
 func (r *ModelRouter) Route(messages []MessageContent, tokenCount int, requestedModel string, effort string) (RouteResult, error) {
 	cfg := r.atomic.Get()
 
-	if result, ok := r.resolveRequestedModel(cfg, requestedModel, effort); ok {
+	if result, ok := r.resolveRequestedModel(cfg, requestedModel, effort, tokenCount); ok {
 		return result, nil
 	}
 
@@ -137,8 +146,12 @@ func (r *ModelRouter) Route(messages []MessageContent, tokenCount int, requested
 	// If enable_effort_scenario_routing is enabled, try effort-based override for the scenario
 	if cfg.EnableEffortScenarioRouting && effort != "" {
 		if effortResult, ok := r.RouteWithEffortOverride(scenarioKey, effort); ok {
-			r.logger.Debug("resolved scenario via effort override", "scenario", scenarioKey, "effort", effort, "target", effortResult.Primary.ModelID)
-			return effortResult, nil
+			if cfg.RespectRequestedModelUseContextThreshold && effortResult.Primary.ContextThreshold > 0 && tokenCount > effortResult.Primary.ContextThreshold {
+				r.logger.Info("scenario effort override context threshold exceeded, bypassing override", "scenario", scenarioKey, "effort", effort, "tokens", tokenCount, "threshold", effortResult.Primary.ContextThreshold)
+			} else {
+				r.logger.Debug("resolved scenario via effort override", "scenario", scenarioKey, "effort", effort, "target", effortResult.Primary.ModelID)
+				return effortResult, nil
+			}
 		}
 	}
 
@@ -217,7 +230,7 @@ func (rr *RouteResult) GetModelChain() []config.ModelConfig {
 func (r *ModelRouter) RouteForStreaming(messages []MessageContent, tokenCount int, requestedModel string, effort string) RouteResult {
 	cfg := r.atomic.Get()
 
-	if result, ok := r.resolveRequestedModel(cfg, requestedModel, effort); ok {
+	if result, ok := r.resolveRequestedModel(cfg, requestedModel, effort, tokenCount); ok {
 		return result
 	}
 
@@ -230,8 +243,12 @@ func (r *ModelRouter) RouteForStreaming(messages []MessageContent, tokenCount in
 	// If enable_effort_scenario_routing is enabled, try effort-based override for the scenario
 	if cfg.EnableEffortScenarioRouting && effort != "" {
 		if effortResult, ok := r.RouteWithEffortOverride(scenarioKey, effort); ok {
-			r.logger.Debug("resolved streaming scenario via effort override", "scenario", scenarioKey, "effort", effort, "target", effortResult.Primary.ModelID)
-			return effortResult
+			if cfg.RespectRequestedModelUseContextThreshold && effortResult.Primary.ContextThreshold > 0 && tokenCount > effortResult.Primary.ContextThreshold {
+				r.logger.Info("streaming scenario effort override context threshold exceeded, bypassing override", "scenario", scenarioKey, "effort", effort, "tokens", tokenCount, "threshold", effortResult.Primary.ContextThreshold)
+			} else {
+				r.logger.Debug("resolved streaming scenario via effort override", "scenario", scenarioKey, "effort", effort, "target", effortResult.Primary.ModelID)
+				return effortResult
+			}
 		}
 	}
 

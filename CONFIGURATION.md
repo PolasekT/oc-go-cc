@@ -142,6 +142,7 @@ Environment variables override config file values. Config values also support `$
 | `OC_GO_CC_OPENCODE_ZEN_URL` | OpenCode Zen API endpoint              | `https://opencode.ai/zen/v1/chat/completions`    |
 | `OC_GO_CC_ENABLE_EFFORT_ROUTING` | Enable effort-based scenario routing | `false` |
 | `OC_GO_CC_RESPECT_MODEL_EFFORT` | Use effort with respect_requested_model | `false` |
+| `OC_GO_CC_RESPECT_MODEL_CONTEXT` | Enforce context threshold on requested model | `false` |
 | `OC_GO_CC_ANTH_COMP_URL` | Anth_comp API endpoint                     | —                                                |
 | `OC_GO_CC_ANTH_COMP_API_KEY` | Anth_comp specific API key             | —                                                |
 | `OC_GO_CC_LOG_LEVEL`    | Log level: `debug`, `info`, `warn`, `error` | `info`                                           |

@@ -222,7 +222,7 @@ func TestResolveRequestedModel_UsesFallbacks(t *testing.T) {
 
 	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
 
-	result, ok := router.resolveRequestedModel(cfg, "kimi-k2.6", "")
+	result, ok := router.resolveRequestedModel(cfg, "kimi-k2.6", "", 100)
 	if !ok {
 		t.Fatal("expected resolveRequestedModel to match")
 	}
@@ -363,6 +363,49 @@ func TestRoute_EnableEffortScenarioRouting(t *testing.T) {
 	result, _ = router.Route(messages, 100, "", "low")
 	if result.Primary.ModelID != "complex-model" {
 		t.Errorf("expected complex-model, got %s", result.Primary.ModelID)
+	}
+}
+
+func TestRoute_RespectRequestedModelUseContextThreshold(t *testing.T) {
+	cfg := &config.Config{
+		RespectRequestedModel:                    true,
+		RespectRequestedModelUseContextThreshold: true,
+		Models: map[string]config.ModelConfig{
+			"default": {ModelID: "scenario-default"},
+			"my-model": {
+				ModelID:          "my-model-default",
+				ContextThreshold: 50,
+			},
+			"long_context": {
+				ModelID: "scenario-long-context",
+			},
+		},
+		Fallbacks: map[string][]config.ModelConfig{
+			"default": {{ModelID: "fallback"}},
+		},
+	}
+	router := NewModelRouter(newTestAtomicConfig(cfg), slog.Default())
+
+	messages := []MessageContent{{Role: "user", Content: "hello"}}
+
+	// Case 1: Flag true, under threshold
+	result, _ := router.Route(messages, 40, "my-model", "")
+	if result.Primary.ModelID != "my-model-default" {
+		t.Errorf("expected my-model-default, got %s", result.Primary.ModelID)
+	}
+
+	// Case 2: Flag true, over threshold -> scenario routing (long_context because 60 > default 80k threshold? No, default long_context threshold is 80000. Wait, 60 is not > 80k, so DetectScenario will return ScenarioDefault)
+	// Wait, if DetectScenario returns ScenarioDefault, then it will use 'scenario-default'. Let's check.
+	result, _ = router.Route(messages, 60, "my-model", "")
+	if result.Primary.ModelID != "scenario-default" {
+		t.Errorf("expected scenario-default (due to fallback), got %s", result.Primary.ModelID)
+	}
+
+	// Case 3: Flag false, over threshold -> requested model
+	cfg.RespectRequestedModelUseContextThreshold = false
+	result, _ = router.Route(messages, 60, "my-model", "")
+	if result.Primary.ModelID != "my-model-default" {
+		t.Errorf("expected my-model-default, got %s", result.Primary.ModelID)
 	}
 }
 

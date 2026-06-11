@@ -10,10 +10,11 @@ type Config struct {
 	Port                           int                      `json:"port"`
 	HotReload                      bool                              `json:"hot_reload"`
 	EnableStreamingScenarioRouting bool                              `json:"enable_streaming_scenario_routing"`
-	RespectRequestedModel          bool                              `json:"respect_requested_model"`
-	EnableEffortScenarioRouting    bool                              `json:"enable_effort_scenario_routing"`
-	RespectRequestedModelUseEffort bool                              `json:"respect_requested_model_use_effort"`
-	Models                         map[string]ModelConfig            `json:"models"`
+	RespectRequestedModel                  bool                              `json:"respect_requested_model"`
+	EnableEffortScenarioRouting            bool                              `json:"enable_effort_scenario_routing"`
+	RespectRequestedModelUseEffort         bool                              `json:"respect_requested_model_use_effort"`
+	RespectRequestedModelUseContextThreshold bool                            `json:"respect_requested_model_use_context_threshold"`
+	Models                                 map[string]ModelConfig            `json:"models"`
 	Fallbacks                      map[string][]ModelConfig          `json:"fallbacks"`
 	ModelOverrides                 map[string]ModelConfig            `json:"model_overrides"`
 	ModelEffortOverrides           map[string]map[string]ModelConfig `json:"model_effort_overrides"`

@@ -164,11 +164,8 @@ func (h *MessagesHandler) HandleMessages(w http.ResponseWriter, r *http.Request)
 		"max_tokens", anthropicReq.MaxTokens,
 	)
 
-	// Build message content for routing and token counting.
+	// Build message content for routing.
 	var routerMessages []router.MessageContent
-	var tokenMessages []token.MessageContent
-	systemText := anthropicReq.SystemText()
-
 	for _, msg := range anthropicReq.Messages {
 		blocks := msg.ContentBlocks()
 		content := extractTextFromBlocks(blocks)
@@ -177,13 +174,14 @@ func (h *MessagesHandler) HandleMessages(w http.ResponseWriter, r *http.Request)
 			Content: content,
 		}
 		routerMessages = append(routerMessages, mc)
-		tokenMessages = append(tokenMessages, token.MessageContent{
-			Role:    msg.Role,
-			Content: content,
-		})
 	}
 
-	// Count tokens.
+	// Count tokens accurately using tools and all text fields.
+	systemText, err := systemAndToolsTokenText(anthropicReq.SystemText(), anthropicReq.Tools)
+	if err != nil {
+		reqLogger.Warn("failed to process tools for token counting", "error", err)
+	}
+	tokenMessages := tokenMessagesFromAnthropic(anthropicReq.Messages)
 	tokenCount, err := h.tokenCounter.CountMessages(systemText, tokenMessages)
 	if err != nil {
 		reqLogger.Warn("failed to count tokens", "error", err)
@@ -244,27 +242,35 @@ func (h *MessagesHandler) buildModelChain(
 		// Priority 1: Effort override
 		if effort != "" && cfg.RespectRequestedModelUseEffort {
 			if effortResult, ok := h.modelRouter.RouteWithEffortOverride(requestedModel, effort); ok {
-				reqLogger.Debug("effort override matched", "model", requestedModel, "effort", effort, "target", effortResult.Primary.ModelID)
-				scenarioResult, err := h.routeOnce(routerMessages, tokenCount, "", effort, isStreaming)
-				if err != nil {
-					return effortResult.GetModelChain(), effortResult, err
+				if cfg.RespectRequestedModelUseContextThreshold && effortResult.Primary.ContextThreshold > 0 && tokenCount > effortResult.Primary.ContextThreshold {
+					reqLogger.Info("effort override context threshold exceeded, bypassing override", "model", requestedModel, "effort", effort, "tokens", tokenCount, "threshold", effortResult.Primary.ContextThreshold)
+				} else {
+					reqLogger.Debug("effort override matched", "model", requestedModel, "effort", effort, "target", effortResult.Primary.ModelID)
+					scenarioResult, err := h.routeOnce(routerMessages, tokenCount, "", effort, isStreaming)
+					if err != nil {
+						return effortResult.GetModelChain(), effortResult, err
+					}
+					chain := appendUniqueModels(effortResult.GetModelChain(), scenarioResult.GetModelChain())
+					return chain, effortResult, nil
 				}
-				chain := appendUniqueModels(effortResult.GetModelChain(), scenarioResult.GetModelChain())
-				return chain, effortResult, nil
 			}
 		}
 
 		// Priority 2: Model override
 		if overrideResult, ok := h.modelRouter.RouteWithOverride(requestedModel); ok {
-			reqLogger.Debug("model override matched", "model", requestedModel, "target", overrideResult.Primary.ModelID)
-			scenarioResult, err := h.routeOnce(routerMessages, tokenCount, "", effort, isStreaming)
-			if err != nil {
-				// Override is valid; surface the scenario routing error rather
-				// than silently dropping the safety net.
-				return overrideResult.GetModelChain(), overrideResult, err
+			if cfg.RespectRequestedModelUseContextThreshold && overrideResult.Primary.ContextThreshold > 0 && tokenCount > overrideResult.Primary.ContextThreshold {
+				reqLogger.Info("model override context threshold exceeded, bypassing override", "model", requestedModel, "tokens", tokenCount, "threshold", overrideResult.Primary.ContextThreshold)
+			} else {
+				reqLogger.Debug("model override matched", "model", requestedModel, "target", overrideResult.Primary.ModelID)
+				scenarioResult, err := h.routeOnce(routerMessages, tokenCount, "", effort, isStreaming)
+				if err != nil {
+					// Override is valid; surface the scenario routing error rather
+					// than silently dropping the safety net.
+					return overrideResult.GetModelChain(), overrideResult, err
+				}
+				chain := appendUniqueModels(overrideResult.GetModelChain(), scenarioResult.GetModelChain())
+				return chain, overrideResult, nil
 			}
-			chain := appendUniqueModels(overrideResult.GetModelChain(), scenarioResult.GetModelChain())
-			return chain, overrideResult, nil
 		}
 	}
 

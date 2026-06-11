@@ -49,7 +49,7 @@ func DetectScenario(messages []MessageContent, tokenCount int, cfg *config.Confi
 		return ScenarioResult{
 			Scenario:   ScenarioLongContext,
 			TokenCount: tokenCount,
-			Reason:     fmt.Sprintf("token count %d exceeds threshold %d (use MiniMax for 1M context)", tokenCount, threshold),
+			Reason:     fmt.Sprintf("long context (%d > %d)", tokenCount, threshold),
 		}
 	}
 
@@ -58,7 +58,7 @@ func DetectScenario(messages []MessageContent, tokenCount int, cfg *config.Confi
 		return ScenarioResult{
 			Scenario:   ScenarioComplex,
 			TokenCount: tokenCount,
-			Reason:     "complex or tool-based operation detected (use GLM-5.1)",
+			Reason:     "complex operation",
 		}
 	}
 
@@ -67,7 +67,7 @@ func DetectScenario(messages []MessageContent, tokenCount int, cfg *config.Confi
 		return ScenarioResult{
 			Scenario:   ScenarioThink,
 			TokenCount: tokenCount,
-			Reason:     "thinking/reasoning pattern detected (use GLM-5)",
+			Reason:     "thinking detected",
 		}
 	}
 
@@ -76,7 +76,7 @@ func DetectScenario(messages []MessageContent, tokenCount int, cfg *config.Confi
 		return ScenarioResult{
 			Scenario:   ScenarioBackground,
 			TokenCount: tokenCount,
-			Reason:     "simple background task detected (use Qwen3.5 Plus)",
+			Reason:     "simple background task",
 		}
 	}
 
@@ -84,7 +84,7 @@ func DetectScenario(messages []MessageContent, tokenCount int, cfg *config.Confi
 	return ScenarioResult{
 		Scenario:   ScenarioDefault,
 		TokenCount: tokenCount,
-		Reason:     "default scenario (use Kimi K2.6)",
+		Reason:     "default scenario",
 	}
 }
 
@@ -210,7 +210,7 @@ func RouteForStreaming(messages []MessageContent, tokenCount int, cfg *config.Co
 		return ScenarioResult{
 			Scenario:   ScenarioLongContext,
 			TokenCount: tokenCount,
-			Reason:     fmt.Sprintf("high token count streaming (%d > %d) - use %s for acceptable TTFT", tokenCount, threshold, model),
+			Reason:     fmt.Sprintf("long context streaming (%d > %d)", tokenCount, threshold),
 		}
 	}
 
@@ -220,7 +220,7 @@ func RouteForStreaming(messages []MessageContent, tokenCount int, cfg *config.Co
 		return ScenarioResult{
 			Scenario:   ScenarioFast,
 			TokenCount: tokenCount,
-			Reason:     "complex request but streaming - use fast model (qwen3.6-plus) for better TTFT",
+			Reason:     "complex streaming request",
 		}
 	}
 
@@ -228,6 +228,6 @@ func RouteForStreaming(messages []MessageContent, tokenCount int, cfg *config.Co
 	return ScenarioResult{
 		Scenario:   ScenarioFast,
 		TokenCount: tokenCount,
-		Reason:     "streaming request - use fast model (qwen3.6-plus)",
+		Reason:     "simple streaming request",
 	}
 }

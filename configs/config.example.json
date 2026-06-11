@@ -7,6 +7,7 @@
   "respect_requested_model": false,
   "enable_effort_scenario_routing": false,
   "respect_requested_model_use_effort": false,
+  "respect_requested_model_use_context_threshold": false,
 
   "models": {
     "background": {

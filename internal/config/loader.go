@@ -129,6 +129,9 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("OC_GO_CC_RESPECT_MODEL_EFFORT"); v != "" {
 		cfg.RespectRequestedModelUseEffort = strings.ToLower(v) == "true"
 	}
+	if v := os.Getenv("OC_GO_CC_RESPECT_MODEL_CONTEXT"); v != "" {
+		cfg.RespectRequestedModelUseContextThreshold = strings.ToLower(v) == "true"
+	}
 	if v := os.Getenv("OC_GO_CC_ANTH_COMP_URL"); v != "" {
 		cfg.AnthropicCompatible.BaseURL = v
 	}
