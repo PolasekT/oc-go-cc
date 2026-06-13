@@ -137,8 +137,8 @@ func TestRouteForStreaming_RespectsConfiguredThreshold(t *testing.T) {
 	if result.Scenario != ScenarioLongContext {
 		t.Errorf("Expected ScenarioLongContext for 300000 tokens with threshold 256000, got %s", result.Scenario)
 	}
-	if !strings.Contains(result.Reason, "deepseek-v4-flash") {
-		t.Errorf("Expected reason to mention configured model 'deepseek-v4-flash', got: %s", result.Reason)
+	if !strings.Contains(result.Reason, "long context streaming") {
+		t.Errorf("Expected reason to mention 'long context streaming', got: %s", result.Reason)
 	}
 }
 
@@ -177,7 +177,7 @@ func TestRouteForStreaming_NilConfig(t *testing.T) {
 	if result.Scenario != ScenarioLongContext {
 		t.Errorf("Expected ScenarioLongContext for 110000 tokens with nil config, got %s", result.Scenario)
 	}
-	if !strings.Contains(result.Reason, "long_context") {
-		t.Errorf("Expected reason to contain fallback model name 'long_context', got: %s", result.Reason)
+	if !strings.Contains(result.Reason, "long context streaming") {
+		t.Errorf("Expected reason to mention 'long context streaming', got: %s", result.Reason)
 	}
 }

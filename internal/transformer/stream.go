@@ -61,7 +61,7 @@ func (h *StreamHandler) ProxyStream(
 			Model:   originalModel,
 		},
 	}
-	if err := writeSSEEvent(w, msgStart); err != nil {
+	if err := WriteSSEEvent(w, msgStart); err != nil {
 		return ErrClientDisconnected
 	}
 	flusher.Flush()
@@ -128,7 +128,7 @@ func (h *StreamHandler) ProxyStream(
 			Type:  "content_block_stop",
 			Index: &contentIndex,
 		}
-		if err := writeSSEEvent(w, stopEvent); err != nil {
+		if err := WriteSSEEvent(w, stopEvent); err != nil {
 			return ErrClientDisconnected
 		}
 		contentStarted = false
@@ -155,7 +155,7 @@ func (h *StreamHandler) ProxyStream(
 				Type:  "content_block_stop",
 				Index: &idx,
 			}
-			if err := writeSSEEvent(w, stopEvent); err != nil {
+			if err := WriteSSEEvent(w, stopEvent); err != nil {
 				return ErrClientDisconnected
 			}
 		}
@@ -176,7 +176,7 @@ func (h *StreamHandler) ProxyStream(
 			},
 			Usage: usageInfoToAnthropic(nil),
 		}
-		if err := writeSSEEvent(w, msgDelta); err != nil {
+		if err := WriteSSEEvent(w, msgDelta); err != nil {
 			return ErrClientDisconnected
 		}
 		stopSent = true
@@ -186,7 +186,7 @@ func (h *StreamHandler) ProxyStream(
 	stopEvent := types.MessageEvent{
 		Type: "message_stop",
 	}
-	if err := writeSSEEvent(w, stopEvent); err != nil {
+	if err := WriteSSEEvent(w, stopEvent); err != nil {
 		return ErrClientDisconnected
 	}
 	flusher.Flush()
@@ -254,7 +254,7 @@ func (h *StreamHandler) processSSELine(
 								Type:  "content_block_stop",
 								Index: contentIndex,
 							}
-							if err := writeSSEEvent(w, stopEvent); err != nil {
+							if err := WriteSSEEvent(w, stopEvent); err != nil {
 								return ErrClientDisconnected
 							}
 							*contentIndex++
@@ -267,7 +267,7 @@ func (h *StreamHandler) processSSELine(
 							Index:        contentIndex,
 							ContentBlock: &types.ContentBlock{Type: "text", Text: ""},
 						}
-						if err := writeSSEEvent(w, startEvent); err != nil {
+						if err := WriteSSEEvent(w, startEvent); err != nil {
 							return ErrClientDisconnected
 						}
 					}
@@ -282,7 +282,7 @@ func (h *StreamHandler) processSSELine(
 						Index: contentIndex,
 						Delta: &delta,
 					}
-					if err := writeSSEEvent(w, event); err != nil {
+					if err := WriteSSEEvent(w, event); err != nil {
 						return ErrClientDisconnected
 					}
 					flusher.Flush()
@@ -308,7 +308,7 @@ func (h *StreamHandler) processSSELine(
 					Delta: &types.Delta{},
 					Usage: usageInfoToAnthropic(chunk.Usage),
 				}
-				if err := writeSSEEvent(w, event); err != nil {
+				if err := WriteSSEEvent(w, event); err != nil {
 					return ErrClientDisconnected
 				}
 				flusher.Flush()
@@ -333,7 +333,7 @@ func (h *StreamHandler) processSSELine(
 					Type:  "content_block_stop",
 					Index: contentIndex,
 				}
-				if err := writeSSEEvent(w, stopEvent); err != nil {
+				if err := WriteSSEEvent(w, stopEvent); err != nil {
 					return ErrClientDisconnected
 				}
 				*contentIndex++
@@ -345,7 +345,7 @@ func (h *StreamHandler) processSSELine(
 				Index:        contentIndex,
 				ContentBlock: &types.ContentBlock{Type: "thinking", Thinking: ""},
 			}
-			if err := writeSSEEvent(w, startEvent); err != nil {
+			if err := WriteSSEEvent(w, startEvent); err != nil {
 				return ErrClientDisconnected
 			}
 		}
@@ -359,7 +359,7 @@ func (h *StreamHandler) processSSELine(
 			Index: contentIndex,
 			Delta: &delta,
 		}
-		if err := writeSSEEvent(w, event); err != nil {
+		if err := WriteSSEEvent(w, event); err != nil {
 			return ErrClientDisconnected
 		}
 		flusher.Flush()
@@ -374,7 +374,7 @@ func (h *StreamHandler) processSSELine(
 					Type:  "content_block_stop",
 					Index: contentIndex,
 				}
-				if err := writeSSEEvent(w, stopEvent); err != nil {
+				if err := WriteSSEEvent(w, stopEvent); err != nil {
 					return ErrClientDisconnected
 				}
 				*contentIndex++
@@ -386,7 +386,7 @@ func (h *StreamHandler) processSSELine(
 				Index:        contentIndex,
 				ContentBlock: &types.ContentBlock{Type: "text", Text: ""},
 			}
-			if err := writeSSEEvent(w, startEvent); err != nil {
+			if err := WriteSSEEvent(w, startEvent); err != nil {
 				return ErrClientDisconnected
 			}
 		}
@@ -400,7 +400,7 @@ func (h *StreamHandler) processSSELine(
 			Index: contentIndex,
 			Delta: &delta,
 		}
-		if err := writeSSEEvent(w, event); err != nil {
+		if err := WriteSSEEvent(w, event); err != nil {
 			return ErrClientDisconnected
 		}
 		flusher.Flush()
@@ -428,7 +428,7 @@ func (h *StreamHandler) processSSELine(
 						Type:  "content_block_stop",
 						Index: contentIndex,
 					}
-					if err := writeSSEEvent(w, stopEvent); err != nil {
+					if err := WriteSSEEvent(w, stopEvent); err != nil {
 						return ErrClientDisconnected
 					}
 					*contentStarted = false
@@ -454,7 +454,7 @@ func (h *StreamHandler) processSSELine(
 						Input: json.RawMessage(`{}`),
 					},
 				}
-				if err := writeSSEEvent(w, startEvent); err != nil {
+				if err := WriteSSEEvent(w, startEvent); err != nil {
 					return ErrClientDisconnected
 				}
 			}
@@ -470,7 +470,7 @@ func (h *StreamHandler) processSSELine(
 					Index: &blockIdx,
 					Delta: &delta,
 				}
-				if err := writeSSEEvent(w, event); err != nil {
+				if err := WriteSSEEvent(w, event); err != nil {
 					return ErrClientDisconnected
 				}
 			}
@@ -486,7 +486,7 @@ func (h *StreamHandler) processSSELine(
 				Type:  "content_block_stop",
 				Index: contentIndex,
 			}
-			if err := writeSSEEvent(w, stopEvent); err != nil {
+			if err := WriteSSEEvent(w, stopEvent); err != nil {
 				return ErrClientDisconnected
 			}
 			*contentStarted = false
@@ -512,7 +512,7 @@ func (h *StreamHandler) processSSELine(
 					Type:  "content_block_stop",
 					Index: &idx,
 				}
-				if err := writeSSEEvent(w, stopEvent); err != nil {
+				if err := WriteSSEEvent(w, stopEvent); err != nil {
 					return ErrClientDisconnected
 				}
 			}
@@ -530,7 +530,7 @@ func (h *StreamHandler) processSSELine(
 			},
 			Usage: usageInfoToAnthropic(chunk.Usage),
 		}
-		if err := writeSSEEvent(w, msgDelta); err != nil {
+		if err := WriteSSEEvent(w, msgDelta); err != nil {
 			return ErrClientDisconnected
 		}
 		*stopSent = true
@@ -548,7 +548,7 @@ func (h *StreamHandler) sendUsageDelta(w http.ResponseWriter, flusher http.Flush
 		},
 		Usage: usageInfoToAnthropic(usage),
 	}
-	if err := writeSSEEvent(w, event); err != nil {
+	if err := WriteSSEEvent(w, event); err != nil {
 		return ErrClientDisconnected
 	}
 	flusher.Flush()
@@ -576,9 +576,9 @@ func usageInfoToAnthropic(usage *types.UsageInfo) *types.Usage {
 	}
 }
 
-// writeSSEEvent writes a single SSE event to the HTTP response writer.
+// WriteSSEEvent writes a single SSE event to the HTTP response writer.
 // Format: "event: <type>\ndata: <json>\n\n"
-func writeSSEEvent(w http.ResponseWriter, event types.MessageEvent) error {
+func WriteSSEEvent(w http.ResponseWriter, event types.MessageEvent) error {
 	data, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal event: %w", err)
@@ -616,7 +616,7 @@ func (h *StreamHandler) ProxyResponsesStream(
 			Model:   originalModel,
 		},
 	}
-	if err := writeSSEEvent(w, msgStart); err != nil {
+	if err := WriteSSEEvent(w, msgStart); err != nil {
 		return ErrClientDisconnected
 	}
 	flusher.Flush()
@@ -669,7 +669,7 @@ func (h *StreamHandler) ProxyResponsesStream(
 			Type:  "content_block_stop",
 			Index: &contentIndex,
 		}
-		if err := writeSSEEvent(w, stopEvent); err != nil {
+		if err := WriteSSEEvent(w, stopEvent); err != nil {
 			return ErrClientDisconnected
 		}
 	}
@@ -682,7 +682,7 @@ func (h *StreamHandler) ProxyResponsesStream(
 			},
 			Usage: &types.Usage{InputTokens: 0, OutputTokens: 0},
 		}
-		if err := writeSSEEvent(w, msgDelta); err != nil {
+		if err := WriteSSEEvent(w, msgDelta); err != nil {
 			return ErrClientDisconnected
 		}
 		stopSent = true
@@ -691,7 +691,7 @@ func (h *StreamHandler) ProxyResponsesStream(
 	stopEvent := types.MessageEvent{
 		Type: "message_stop",
 	}
-	if err := writeSSEEvent(w, stopEvent); err != nil {
+	if err := WriteSSEEvent(w, stopEvent); err != nil {
 		return ErrClientDisconnected
 	}
 	flusher.Flush()
@@ -731,7 +731,7 @@ func (h *StreamHandler) processResponsesSSELine(
 				Index:        contentIndex,
 				ContentBlock: &types.ContentBlock{Type: "text", Text: ""},
 			}
-			if err := writeSSEEvent(w, startEvent); err != nil {
+			if err := WriteSSEEvent(w, startEvent); err != nil {
 				return ErrClientDisconnected
 			}
 		}
@@ -745,7 +745,7 @@ func (h *StreamHandler) processResponsesSSELine(
 			Index: contentIndex,
 			Delta: &delta,
 		}
-		if err := writeSSEEvent(w, event); err != nil {
+		if err := WriteSSEEvent(w, event); err != nil {
 			return ErrClientDisconnected
 		}
 		flusher.Flush()
@@ -760,7 +760,7 @@ func (h *StreamHandler) processResponsesSSELine(
 				},
 				Usage: usageInfoToAnthropic(nil),
 			}
-			if err := writeSSEEvent(w, msgDelta); err != nil {
+			if err := WriteSSEEvent(w, msgDelta); err != nil {
 				return ErrClientDisconnected
 			}
 			*stopSent = true
@@ -794,7 +794,7 @@ func (h *StreamHandler) ProxyGeminiStream(
 			Model:   originalModel,
 		},
 	}
-	if err := writeSSEEvent(w, msgStart); err != nil {
+	if err := WriteSSEEvent(w, msgStart); err != nil {
 		return ErrClientDisconnected
 	}
 	flusher.Flush()
@@ -847,7 +847,7 @@ func (h *StreamHandler) ProxyGeminiStream(
 			Type:  "content_block_stop",
 			Index: &contentIndex,
 		}
-		if err := writeSSEEvent(w, stopEvent); err != nil {
+		if err := WriteSSEEvent(w, stopEvent); err != nil {
 			return ErrClientDisconnected
 		}
 	}
@@ -860,7 +860,7 @@ func (h *StreamHandler) ProxyGeminiStream(
 			},
 			Usage: &types.Usage{InputTokens: 0, OutputTokens: 0},
 		}
-		if err := writeSSEEvent(w, msgDelta); err != nil {
+		if err := WriteSSEEvent(w, msgDelta); err != nil {
 			return ErrClientDisconnected
 		}
 		stopSent = true
@@ -869,7 +869,7 @@ func (h *StreamHandler) ProxyGeminiStream(
 	stopEvent := types.MessageEvent{
 		Type: "message_stop",
 	}
-	if err := writeSSEEvent(w, stopEvent); err != nil {
+	if err := WriteSSEEvent(w, stopEvent); err != nil {
 		return ErrClientDisconnected
 	}
 	flusher.Flush()
@@ -912,7 +912,7 @@ func (h *StreamHandler) processGeminiSSELine(
 						Index:        contentIndex,
 						ContentBlock: &types.ContentBlock{Type: "text", Text: ""},
 					}
-					if err := writeSSEEvent(w, startEvent); err != nil {
+					if err := WriteSSEEvent(w, startEvent); err != nil {
 						return ErrClientDisconnected
 					}
 				}
@@ -926,7 +926,7 @@ func (h *StreamHandler) processGeminiSSELine(
 					Index: contentIndex,
 					Delta: &delta,
 				}
-				if err := writeSSEEvent(w, event); err != nil {
+				if err := WriteSSEEvent(w, event); err != nil {
 					return ErrClientDisconnected
 				}
 				flusher.Flush()
@@ -939,7 +939,7 @@ func (h *StreamHandler) processGeminiSSELine(
 					Type:  "content_block_stop",
 					Index: contentIndex,
 				}
-				if err := writeSSEEvent(w, stopEvent); err != nil {
+				if err := WriteSSEEvent(w, stopEvent); err != nil {
 					return ErrClientDisconnected
 				}
 				*contentStarted = false
@@ -957,7 +957,7 @@ func (h *StreamHandler) processGeminiSSELine(
 				},
 				Usage: usageInfoToAnthropic(nil),
 			}
-			if err := writeSSEEvent(w, msgDelta); err != nil {
+			if err := WriteSSEEvent(w, msgDelta); err != nil {
 				return ErrClientDisconnected
 			}
 			*stopSent = true

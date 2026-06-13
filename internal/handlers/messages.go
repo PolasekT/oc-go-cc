@@ -8,7 +8,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -39,13 +41,16 @@ type MessagesHandler struct {
 	metrics             *metrics.Metrics
 }
 
-// responseWriter wraps http.ResponseWriter to track if headers were written.
+// responseWriter wraps http.ResponseWriter to track if headers were written and synchronize concurrent writes.
 type responseWriter struct {
 	http.ResponseWriter
 	wroteHeader bool
+	mu          sync.Mutex
 }
 
 func (w *responseWriter) WriteHeader(code int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if !w.wroteHeader {
 		w.wroteHeader = true
 		w.ResponseWriter.WriteHeader(code)
@@ -53,14 +58,18 @@ func (w *responseWriter) WriteHeader(code int) {
 }
 
 func (w *responseWriter) Write(b []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if !w.wroteHeader {
-		w.WriteHeader(http.StatusOK)
+		w.wroteHeader = true
+		w.ResponseWriter.WriteHeader(http.StatusOK)
 	}
 	return w.ResponseWriter.Write(b)
 }
 
-// Flush implements http.Flusher for SSE streaming support.
 func (w *responseWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
@@ -186,6 +195,30 @@ func (h *MessagesHandler) HandleMessages(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		reqLogger.Warn("failed to count tokens", "error", err)
 		tokenCount = 0
+	}
+
+	cfg := h.atomic.Get()
+
+	// Check Title Generation Interceptor
+	if cfg.Interceptors.TitleGeneration.Enabled && strings.Contains(systemText, "Generate a concise, sentence-case title") {
+		if cfg.Interceptors.TitleGeneration.Action == "dummy" {
+			h.handleDummyTitleGeneration(w, &anthropicReq, cfg.Interceptors.TitleGeneration.DummyResponse, isStreaming, tokenCount, reqLogger)
+			return
+		} else if cfg.Interceptors.TitleGeneration.Action == "redirect" {
+			reqLogger.Info("intercepted title generation, redirecting model", "from", anthropicReq.Model, "to", cfg.Interceptors.TitleGeneration.RedirectModel)
+			anthropicReq.Model = cfg.Interceptors.TitleGeneration.RedirectModel
+		}
+	}
+
+	// Check Security Classifier Interceptor
+	if cfg.Interceptors.SecurityClassifier.Enabled && strings.Contains(systemText, "You are a security monitor for autonomous AI coding agents") {
+		if cfg.Interceptors.SecurityClassifier.Action == "procedural" {
+			h.handleProceduralSecurityClassifier(w, &anthropicReq, cfg.Interceptors.SecurityClassifier.Permissions, isStreaming, tokenCount, reqLogger)
+			return
+		} else if cfg.Interceptors.SecurityClassifier.Action == "redirect" {
+			reqLogger.Info("intercepted security classifier, redirecting model", "from", anthropicReq.Model, "to", cfg.Interceptors.SecurityClassifier.RedirectModel)
+			anthropicReq.Model = cfg.Interceptors.SecurityClassifier.RedirectModel
+		}
 	}
 
 	// Route to appropriate model and build fallback chain.
@@ -942,5 +975,211 @@ func truncateRecursive(v interface{}) {
 		for _, item := range val {
 			truncateRecursive(item)
 		}
+	}
+}
+
+// handleDummyTitleGeneration sends a dummy title response.
+func (h *MessagesHandler) handleDummyTitleGeneration(
+	w http.ResponseWriter,
+	req *types.MessageRequest,
+	dummyTitle string,
+	isStreaming bool,
+	tokenCount int,
+	reqLogger *slog.Logger,
+) {
+	reqLogger.Info("handling title generation with dummy response", "in_toks", tokenCount, "title", dummyTitle)
+	content := fmt.Sprintf(`{"title": "%s"}`, dummyTitle)
+
+	if isStreaming {
+		h.sendDummyStreamResponse(w, content, reqLogger)
+	} else {
+		h.sendDummyNonStreamResponse(w, content, reqLogger)
+	}
+}
+
+// handleProceduralSecurityClassifier handles the security classifier based on permissions.
+func (h *MessagesHandler) handleProceduralSecurityClassifier(
+	w http.ResponseWriter,
+	req *types.MessageRequest,
+	perms config.PermissionsConfig,
+	isStreaming bool,
+	tokenCount int,
+	reqLogger *slog.Logger,
+) {
+	// Extract all user content to match against
+	var userContent strings.Builder
+	for _, msg := range req.Messages {
+		if msg.Role == "user" {
+			userContent.WriteString(extractTextFromBlocks(msg.ContentBlocks()))
+		}
+	}
+	contentStr := userContent.String()
+
+	// Extract and normalize command for evaluation and logging
+	cmd := ""
+	re := regexp.MustCompile(`Bash\s+([^\n<]+)|(?s)Bash\((.*?)\)`)
+	matches := re.FindAllStringSubmatch(contentStr, -1)
+	if len(matches) > 0 {
+		lastMatch := matches[len(matches)-1]
+		if len(lastMatch) > 1 && lastMatch[1] != "" {
+			cmd = "Bash(" + strings.TrimSpace(lastMatch[1]) + ")"
+		} else if len(lastMatch) > 2 && lastMatch[2] != "" {
+			cmd = "Bash(" + strings.TrimSpace(lastMatch[2]) + ")"
+		}
+	} else {
+		cmd = contentStr
+	}
+
+	blocked := false
+	reason := "Automated decision"
+	matchedRule := "default_allow"
+
+	// Deny takes precedence
+	for _, denyRegex := range perms.Deny {
+		if matched, err := regexp.MatchString(denyRegex, cmd); err == nil && matched {
+			blocked = true
+			reason = fmt.Sprintf("Matched deny rule: %s", denyRegex)
+			matchedRule = denyRegex
+			break
+		}
+	}
+
+	if !blocked {
+		for _, allowRegex := range perms.Allow {
+			if matched, err := regexp.MatchString(allowRegex, cmd); err == nil && matched {
+				blocked = false
+				reason = fmt.Sprintf("Matched allow rule: %s", allowRegex)
+				matchedRule = allowRegex
+				break
+			}
+		}
+		// If neither matched, default to allow since deny takes precedence.
+	}
+
+	var blockText string
+	if blocked {
+		blockText = "yes"
+	} else {
+		blockText = "no"
+	}
+	content := fmt.Sprintf("<block>%s</block><reason>%s</reason>", blockText, reason)
+
+	// Format command for logging
+	cmdLog := cmd
+	if len(cmdLog) > 100 {
+		cmdLog = cmdLog[:100] + "..."
+	}
+
+	reqLogger.Info("handling security classifier procedurally",
+		"in_toks", tokenCount,
+		"command", cmdLog,
+		"rule", matchedRule,
+		"blocked", blocked,
+	)
+
+	if isStreaming {
+		h.sendDummyStreamResponse(w, content, reqLogger)
+	} else {
+		h.sendDummyNonStreamResponse(w, content, reqLogger)
+	}
+}
+
+func (h *MessagesHandler) sendDummyNonStreamResponse(w http.ResponseWriter, text string, reqLogger *slog.Logger) {
+	resp := types.MessageResponse{
+		ID:      "msg_dummy",
+		Type:    "message",
+		Role:    "assistant",
+		Model:   "dummy",
+		Content: []types.ContentBlock{{Type: "text", Text: text}},
+		Usage: types.Usage{
+			InputTokens:  10,
+			OutputTokens: 10,
+		},
+		StopReason: "end_turn",
+	}
+
+	data, _ := json.Marshal(resp)
+	reqLogger.Debug("sending dummy non-stream response", "body", string(data))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (h *MessagesHandler) sendDummyStreamResponse(w http.ResponseWriter, text string, reqLogger *slog.Logger) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	id := "msg_dummy"
+
+	logEvent := func(event types.MessageEvent) {
+		data, _ := json.Marshal(event)
+		reqLogger.Debug("sending dummy stream event", "event", event.Type, "data", string(data))
+	}
+
+	startEvent := types.MessageEvent{
+		Type: "message_start",
+		Message: &types.MessageResponse{
+			ID:      id,
+			Type:    "message",
+			Role:    "assistant",
+			Model:   "dummy",
+			Content: []types.ContentBlock{},
+			Usage:   types.Usage{InputTokens: 10},
+		},
+	}
+	logEvent(startEvent)
+	transformer.WriteSSEEvent(w, startEvent)
+
+	idx := 0
+	cbStartEvent := types.MessageEvent{
+		Type:  "content_block_start",
+		Index: &idx,
+		ContentBlock: &types.ContentBlock{
+			Type: "text",
+			Text: "",
+		},
+	}
+	logEvent(cbStartEvent)
+	transformer.WriteSSEEvent(w, cbStartEvent)
+
+	cbDeltaEvent := types.MessageEvent{
+		Type:  "content_block_delta",
+		Index: &idx,
+		Delta: &types.Delta{
+			Type: "text_delta",
+			Text: text,
+		},
+	}
+	logEvent(cbDeltaEvent)
+	transformer.WriteSSEEvent(w, cbDeltaEvent)
+
+	cbStopEvent := types.MessageEvent{
+		Type:  "content_block_stop",
+		Index: &idx,
+	}
+	logEvent(cbStopEvent)
+	transformer.WriteSSEEvent(w, cbStopEvent)
+
+	msgDeltaEvent := types.MessageEvent{
+		Type: "message_delta",
+		Delta: &types.Delta{
+			StopReason: "end_turn",
+		},
+		Usage: &types.Usage{OutputTokens: 10},
+	}
+	logEvent(msgDeltaEvent)
+	transformer.WriteSSEEvent(w, msgDeltaEvent)
+
+	msgStopEvent := types.MessageEvent{
+		Type: "message_stop",
+	}
+	logEvent(msgStopEvent)
+	transformer.WriteSSEEvent(w, msgStopEvent)
+
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
 	}
 }

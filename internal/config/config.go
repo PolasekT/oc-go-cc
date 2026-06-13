@@ -14,6 +14,7 @@ type Config struct {
 	EnableEffortScenarioRouting            bool                              `json:"enable_effort_scenario_routing"`
 	RespectRequestedModelUseEffort         bool                              `json:"respect_requested_model_use_effort"`
 	RespectRequestedModelUseContextThreshold bool                            `json:"respect_requested_model_use_context_threshold"`
+	Interceptors                           InterceptorsConfig                `json:"interceptors"`
 	Models                                 map[string]ModelConfig            `json:"models"`
 	Fallbacks                      map[string][]ModelConfig          `json:"fallbacks"`
 	ModelOverrides                 map[string]ModelConfig            `json:"model_overrides"`
@@ -22,6 +23,34 @@ type Config struct {
 	OpenCodeZen                    OpenCodeZenConfig                 `json:"opencode_zen"`
 	AnthropicCompatible            AnthropicCompatibleConfig         `json:"anth_comp"`
 	Logging                        LoggingConfig                     `json:"logging"`
+}
+
+// InterceptorsConfig holds the configuration for request interception.
+type InterceptorsConfig struct {
+	TitleGeneration    TitleGenerationInterceptorConfig    `json:"title_generation"`
+	SecurityClassifier SecurityClassifierInterceptorConfig `json:"security_classifier"`
+}
+
+// TitleGenerationInterceptorConfig holds the configuration for title generation interception.
+type TitleGenerationInterceptorConfig struct {
+	Enabled       bool   `json:"enabled"`
+	Action        string `json:"action"` // "dummy" or "redirect"
+	RedirectModel string `json:"redirect_model"`
+	DummyResponse string `json:"dummy_response"`
+}
+
+// SecurityClassifierInterceptorConfig holds the configuration for security classifier interception.
+type SecurityClassifierInterceptorConfig struct {
+	Enabled       bool              `json:"enabled"`
+	Action        string            `json:"action"` // "procedural" or "redirect"
+	RedirectModel string            `json:"redirect_model"`
+	Permissions   PermissionsConfig `json:"permissions"`
+}
+
+// PermissionsConfig holds the regex-based permission rules.
+type PermissionsConfig struct {
+	Deny  []string `json:"deny"`
+	Allow []string `json:"allow"`
 }
 
 // ModelConfig defines routing rules for a specific model.

@@ -112,6 +112,36 @@
   "model_effort_overrides": {
   },
 
+  "interceptors": {
+    "title_generation": {
+      "enabled": true,
+      "action": "dummy",
+      "redirect_model": "mini",
+      "dummy_response": "Auto-generated title"
+    },
+    "security_classifier": {
+      "enabled": true,
+      "action": "procedural",
+      "redirect_model": "mini",
+      "permissions": {
+        "deny": [
+          "Bash\\(.*rm\\s+-rf.*\\)",
+          "Bash\\(.*mkfs.*\\)",
+          "Bash\\(.*dd\\s+if=.*of=/dev/.*\\)",
+          "Bash\\(.*wget\\s+.*\\s+\\|\\s+bash.*\\)",
+          "Bash\\(.*curl\\s+.*\\s+\\|\\s+sh.*\\)",
+          "Bash\\(.*chmod\\s+-R\\s+777.*\\)",
+          "Bash\\(.*chown\\s+-R\\s+root.*\\)",
+          "Bash\\(.*>\\s*/dev/sda.*\\)",
+          "Bash\\(.*mv\\s+.* /dev/null.*\\)"
+        ],
+        "allow": [
+          "Bash\\(.*\\)"
+        ]
+      }
+    }
+  },
+
   "opencode_go": {
     "base_url": "https://opencode.ai/zen/go/v1/chat/completions",
     "anthropic_base_url": "https://opencode.ai/zen/go/v1/messages",
@@ -130,15 +160,6 @@
     "base_url": "https://api.anthropic.com/v1/chat/completions",
     "anthropic_base_url": "https://api.anthropic.com/v1/messages",
     "api_key": "${ANTHROPIC_API_KEY}",
-    "timeout_ms": 300000
-  },
-
-  "logging": {
-    "level": "info",
-    "requests": true
-  }
-}
-{ANTHROPIC_API_KEY}",
     "timeout_ms": 300000
   },
 

@@ -190,6 +190,21 @@ func applyDefaults(cfg *Config) {
 	if cfg.ModelOverrides == nil {
 		cfg.ModelOverrides = make(map[string]ModelConfig)
 	}
+
+	// Default interceptor settings
+	if len(cfg.Interceptors.SecurityClassifier.Permissions.Deny) == 0 {
+		cfg.Interceptors.SecurityClassifier.Permissions.Deny = []string{
+			`Bash\(.*rm\s+-rf.*\)`,
+			`Bash\(.*mkfs.*\)`,
+			`Bash\(.*dd\s+if=.*of=/dev/.*\)`,
+			`Bash\(.*wget\s+.*\s+\|\s+bash.*\)`,
+			`Bash\(.*curl\s+.*\s+\|\s+sh.*\)`,
+			`Bash\(.*chmod\s+-R\s+777.*\)`,
+			`Bash\(.*chown\s+-R\s+root.*\)`,
+			`Bash\(.*>\s*/dev/sda.*\)`,
+			`Bash\(.*mv\s+.* /dev/null.*\)`,
+		}
+	}
 }
 
 // validate checks that all required configuration fields are present.

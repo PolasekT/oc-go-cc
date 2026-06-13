@@ -253,4 +253,45 @@ When a request arrives, the proxy selects a model chain using the following orde
 
 The mapping is `[model_name][effort_level]`. Supported effort levels typically include `low`, `medium`, `high`, `xhigh`, and `max`.
 
-> **Trust model:** any client whose requests flow through the proxy can select from the configured `model_overrides` set without additional authentication. If you run the proxy as a shared service, treat `model_overrides` as a privileged allowlist.
+## Interceptors (`interceptors`)
+
+Interceptors allow you to catch specific, predictable requests (like those from Claude Code) and either handle them locally without making an API call, or forcefully reroute them to a different model. This can significantly speed up operation and save API costs.
+
+```json
+{
+  "interceptors": {
+    "title_generation": {
+      "enabled": true,
+      "action": "dummy",
+      "redirect_model": "mini",
+      "dummy_response": "Auto-generated title"
+    },
+    "security_classifier": {
+      "enabled": true,
+      "action": "procedural",
+      "redirect_model": "mini",
+      "permissions": {
+        "deny": [
+          "Bash\\(.*rm\\s+-rf.*\\)",
+          "Bash\\(.*mkfs.*\\)"
+        ],
+        "allow": [
+          "Bash\\(.*ls\\s+.*\\)"
+        ]
+      }
+    }
+  }
+}
+```
+
+### Title Generation
+Claude Code frequently asks for a title for the current session.
+*   **`action: "dummy"`**: Instantly returns the string specified in `dummy_response`.
+*   **`action: "redirect"`**: Changes the requested model to `redirect_model` and routes the request normally.
+
+### Security Classifier
+When Auto-Approval is enabled, Claude Code asks an LLM to evaluate if a command is safe.
+*   **`action: "procedural"`**: Uses a regex-based `permissions` filter. If the command matches a pattern in `deny`, it blocks. If it matches a pattern in `allow` (and not in `deny`), it allows. If it matches neither, it defaults to allow (safe assumption for autonomous workflows).
+*   **`action: "redirect"`**: Changes the requested model to `redirect_model` and routes the request normally.
+
+> **Note:** The `deny` list takes absolute precedence over the `allow` list.
