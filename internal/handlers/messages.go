@@ -379,20 +379,30 @@ func (h *MessagesHandler) handleStreaming(
 	// Start heartbeat
 	var finished int32
 	heartbeatDone := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
 
 		for {
 			select {
 			case <-ticker.C:
+				rw.mu.Lock()
 				if atomic.LoadInt32(&finished) == 1 {
+					rw.mu.Unlock()
 					return
 				}
-				_, _ = fmt.Fprintf(rw, ":keepalive\n\n")
-				if f, ok := w.(http.Flusher); ok {
+				if !rw.wroteHeader {
+					rw.wroteHeader = true
+					rw.ResponseWriter.WriteHeader(http.StatusOK)
+				}
+				_, _ = fmt.Fprintf(rw.ResponseWriter, ":keepalive\n\n")
+				if f, ok := rw.ResponseWriter.(http.Flusher); ok {
 					f.Flush()
 				}
+				rw.mu.Unlock()
 			case <-heartbeatDone:
 				return
 			case <-clientCtx.Done():
@@ -403,6 +413,7 @@ func (h *MessagesHandler) handleStreaming(
 	defer func() {
 		atomic.StoreInt32(&finished, 1)
 		close(heartbeatDone)
+		wg.Wait()
 	}()
 
 	streamStart := time.Now()
