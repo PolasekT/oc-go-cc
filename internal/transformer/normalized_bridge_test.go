@@ -92,3 +92,59 @@ func TestNormalizedToResponses_SystemPromptWithNewline(t *testing.T) {
 		t.Fatalf("message content mismatch: got %q, want %q", messageContent, req.Messages[0].TextContent())
 	}
 }
+
+func TestNormalizedToResponses_ToolResultAndEmptyContent(t *testing.T) {
+	req := &core.NormalizedRequest{
+		Model: "gpt-5.6-luna",
+		Messages: []core.NormalizedMessage{
+			{
+				Role: "user",
+				Blocks: []core.NormalizedContentBlock{
+					{Type: "text", Text: "Run command"},
+				},
+			},
+			{
+				Role: "assistant",
+				Blocks: []core.NormalizedContentBlock{
+					{Type: "tool_use", Name: "Bash", Input: []byte(`{"command":"ls"}`)},
+				},
+			},
+			{
+				Role: "user",
+				Blocks: []core.NormalizedContentBlock{
+					{Type: "tool_result", ToolUseID: "tool_1", Content: json.RawMessage(`"file1.txt\nfile2.txt"`)},
+				},
+			},
+			{
+				Role: "assistant",
+				Blocks: []core.NormalizedContentBlock{},
+			},
+		},
+	}
+
+	responsesReq := NormalizedToResponses(req, config.ModelConfig{
+		ModelID:         "gpt-5.6-luna",
+		ReasoningEffort: "high",
+	})
+
+	if responsesReq.Reasoning == nil || responsesReq.Reasoning.Effort != "high" {
+		t.Fatalf("expected reasoning effort high, got %+v", responsesReq.Reasoning)
+	}
+
+	if len(responsesReq.Input) != 4 {
+		t.Fatalf("expected 4 input items, got %d", len(responsesReq.Input))
+	}
+
+	for i, input := range responsesReq.Input {
+		if len(input.Content) == 0 {
+			t.Errorf("input[%d].content is empty", i)
+		}
+		var content string
+		if err := json.Unmarshal(input.Content, &content); err != nil {
+			t.Errorf("input[%d].content failed to unmarshal: %v", i, err)
+		}
+		if content == "" {
+			t.Errorf("input[%d].content resolved to empty string", i)
+		}
+	}
+}

@@ -819,7 +819,11 @@ func (h *StreamHandler) ProxyResponsesStream(
 	contentIndex := 0
 	var lineBuf []byte
 	contentStarted := false
+	toolBlockOpen := false
+	toolCallsCount := 0
 	stopSent := false
+	var terminalUsage *types.UsageInfo
+
 	readBuf := readBufPool.Get().(*[]byte)
 	defer readBufPool.Put(readBuf)
 
@@ -838,7 +842,7 @@ func (h *StreamHandler) ProxyResponsesStream(
 			for i := 0; i < n; i++ {
 				b := (*readBuf)[i]
 				if b == '\n' {
-					if err := h.processResponsesSSELine(w, flusher, lineBuf, &contentIndex, &contentStarted, &stopSent, originalModel); err != nil {
+					if err := h.processResponsesSSELine(w, flusher, lineBuf, &contentIndex, &contentStarted, &toolBlockOpen, &toolCallsCount, &stopSent, &terminalUsage, originalModel); err != nil {
 						return err
 					}
 					lineBuf = lineBuf[:0]
@@ -850,7 +854,7 @@ func (h *StreamHandler) ProxyResponsesStream(
 
 		if err == io.EOF {
 			if len(lineBuf) > 0 {
-				if err := h.processResponsesSSELine(w, flusher, lineBuf, &contentIndex, &contentStarted, &stopSent, originalModel); err != nil {
+				if err := h.processResponsesSSELine(w, flusher, lineBuf, &contentIndex, &contentStarted, &toolBlockOpen, &toolCallsCount, &stopSent, &terminalUsage, originalModel); err != nil {
 					return err
 				}
 			}
@@ -867,7 +871,7 @@ func (h *StreamHandler) ProxyResponsesStream(
 		}
 	}
 
-	if contentStarted {
+	if contentStarted || toolBlockOpen {
 		stopEvent := types.MessageEvent{
 			Type:  "content_block_stop",
 			Index: &contentIndex,
@@ -878,12 +882,16 @@ func (h *StreamHandler) ProxyResponsesStream(
 	}
 
 	if !stopSent {
+		stopReason := "end_turn"
+		if toolCallsCount > 0 {
+			stopReason = "tool_use"
+		}
 		msgDelta := types.MessageEvent{
 			Type: "message_delta",
 			Delta: &types.Delta{
-				StopReason: "end_turn",
+				StopReason: stopReason,
 			},
-			Usage: &types.Usage{InputTokens: 0, OutputTokens: 0},
+			Usage: usageInfoToAnthropic(terminalUsage),
 		}
 		if err := writeSSEEvent(w, msgDelta); err != nil {
 			return ErrClientDisconnected
@@ -908,7 +916,10 @@ func (h *StreamHandler) processResponsesSSELine(
 	line []byte,
 	contentIndex *int,
 	contentStarted *bool,
+	toolBlockOpen *bool,
+	toolCallsCount *int,
 	stopSent *bool,
+	terminalUsage **types.UsageInfo,
 	originalModel string,
 ) error {
 	line = bytes.TrimSpace(line)
@@ -926,7 +937,40 @@ func (h *StreamHandler) processResponsesSSELine(
 		return nil
 	}
 
-	if chunk.Type == "response.output_text.delta" && chunk.Delta != "" {
+	// Capture usage if available
+	if chunk.Usage != nil {
+		*terminalUsage = &types.UsageInfo{
+			PromptTokens:     chunk.Usage.InputTokens,
+			CompletionTokens: chunk.Usage.OutputTokens,
+			TotalTokens:      chunk.Usage.InputTokens + chunk.Usage.OutputTokens,
+		}
+	} else if chunk.Response != nil && chunk.Response.Usage != nil {
+		*terminalUsage = &types.UsageInfo{
+			PromptTokens:     chunk.Response.Usage.InputTokens,
+			CompletionTokens: chunk.Response.Usage.OutputTokens,
+			TotalTokens:      chunk.Response.Usage.InputTokens + chunk.Response.Usage.OutputTokens,
+		}
+	}
+
+	// 1. Text deltas
+	textDelta := chunk.Delta
+	if textDelta == "" && chunk.Text != "" {
+		textDelta = chunk.Text
+	}
+	isTextDelta := chunk.Type == "response.output_text.delta" || chunk.Type == "response.text.delta" || chunk.Type == "response.content_part.delta"
+	if isTextDelta && textDelta != "" {
+		if *toolBlockOpen {
+			stopEvent := types.MessageEvent{
+				Type:  "content_block_stop",
+				Index: contentIndex,
+			}
+			if err := writeSSEEvent(w, stopEvent); err != nil {
+				return ErrClientDisconnected
+			}
+			*contentIndex++
+			*toolBlockOpen = false
+		}
+
 		if !*contentStarted {
 			*contentStarted = true
 			startEvent := types.MessageEvent{
@@ -941,7 +985,7 @@ func (h *StreamHandler) processResponsesSSELine(
 
 		delta := types.Delta{
 			Type: "text_delta",
-			Text: chunk.Delta,
+			Text: textDelta,
 		}
 		event := types.MessageEvent{
 			Type:  "content_block_delta",
@@ -952,16 +996,144 @@ func (h *StreamHandler) processResponsesSSELine(
 			return ErrClientDisconnected
 		}
 		flusher.Flush()
+		return nil
 	}
 
+	// 2. Tool / Function call added / started
+	if chunk.Type == "response.output_item.added" && chunk.Item != nil && (chunk.Item.Type == "function_call" || chunk.Item.Type == "custom_tool_call") {
+		if *contentStarted {
+			stopEvent := types.MessageEvent{
+				Type:  "content_block_stop",
+				Index: contentIndex,
+			}
+			if err := writeSSEEvent(w, stopEvent); err != nil {
+				return ErrClientDisconnected
+			}
+			*contentIndex++
+			*contentStarted = false
+		}
+
+		*toolCallsCount++
+		*toolBlockOpen = true
+
+		callID := chunk.Item.CallID
+		if callID == "" {
+			callID = chunk.Item.ID
+		}
+		if callID == "" {
+			callID = fmt.Sprintf("call_%d", *toolCallsCount)
+		}
+
+		startEvent := types.MessageEvent{
+			Type:  "content_block_start",
+			Index: contentIndex,
+			ContentBlock: &types.ContentBlock{
+				Type:  "tool_use",
+				ID:    callID,
+				Name:  chunk.Item.Name,
+				Input: json.RawMessage(`{}`),
+			},
+		}
+		if err := writeSSEEvent(w, startEvent); err != nil {
+			return ErrClientDisconnected
+		}
+		flusher.Flush()
+		return nil
+	}
+
+	// 3. Tool call arguments delta
+	if (chunk.Type == "response.function_call_arguments.delta" || chunk.Type == "response.function_call.delta") && chunk.Delta != "" {
+		if !*toolBlockOpen {
+			if *contentStarted {
+				stopEvent := types.MessageEvent{
+					Type:  "content_block_stop",
+					Index: contentIndex,
+				}
+				if err := writeSSEEvent(w, stopEvent); err != nil {
+					return ErrClientDisconnected
+				}
+				*contentIndex++
+				*contentStarted = false
+			}
+			*toolCallsCount++
+			*toolBlockOpen = true
+			callID := chunk.CallID
+			if callID == "" {
+				callID = fmt.Sprintf("call_%d", *toolCallsCount)
+			}
+			startEvent := types.MessageEvent{
+				Type:  "content_block_start",
+				Index: contentIndex,
+				ContentBlock: &types.ContentBlock{
+					Type:  "tool_use",
+					ID:    callID,
+					Name:  chunk.Name,
+					Input: json.RawMessage(`{}`),
+				},
+			}
+			if err := writeSSEEvent(w, startEvent); err != nil {
+				return ErrClientDisconnected
+			}
+		}
+
+		delta := types.Delta{
+			Type:        "input_json_delta",
+			PartialJSON: chunk.Delta,
+		}
+		event := types.MessageEvent{
+			Type:  "content_block_delta",
+			Index: contentIndex,
+			Delta: &delta,
+		}
+		if err := writeSSEEvent(w, event); err != nil {
+			return ErrClientDisconnected
+		}
+		flusher.Flush()
+		return nil
+	}
+
+	// 4. Tool call finished
+	if chunk.Type == "response.function_call_arguments.done" || (chunk.Type == "response.output_item.done" && chunk.Item != nil && chunk.Item.Type == "function_call") {
+		if *toolBlockOpen {
+			stopEvent := types.MessageEvent{
+				Type:  "content_block_stop",
+				Index: contentIndex,
+			}
+			if err := writeSSEEvent(w, stopEvent); err != nil {
+				return ErrClientDisconnected
+			}
+			*contentIndex++
+			*toolBlockOpen = false
+			flusher.Flush()
+		}
+		return nil
+	}
+
+	// 5. Stream completed
 	if chunk.Type == "response.completed" || chunk.Type == "response.done" {
+		if *contentStarted || *toolBlockOpen {
+			stopEvent := types.MessageEvent{
+				Type:  "content_block_stop",
+				Index: contentIndex,
+			}
+			if err := writeSSEEvent(w, stopEvent); err != nil {
+				return ErrClientDisconnected
+			}
+			*contentStarted = false
+			*toolBlockOpen = false
+		}
+
 		if !*stopSent {
+			stopReason := "end_turn"
+			if *toolCallsCount > 0 {
+				stopReason = "tool_use"
+			}
 			msgDelta := types.MessageEvent{
 				Type: "message_delta",
 				Delta: &types.Delta{
-					StopReason: "end_turn",
+					StopReason: stopReason,
 				},
-				Usage: usageInfoToAnthropic(nil),
+				Usage: usageInfoToAnthropic(*terminalUsage),
 			}
 			if err := writeSSEEvent(w, msgDelta); err != nil {
 				return ErrClientDisconnected

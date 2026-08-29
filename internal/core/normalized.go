@@ -80,7 +80,7 @@ func (m NormalizedMessage) ToolResultsList() []NormalizedToolResult {
 	var results []NormalizedToolResult
 	for _, block := range m.Blocks {
 		if block.Type == "tool_result" {
-			content := toolResultText(block.Content)
+			content := ToolResultText(block.Content)
 			results = append(results, NormalizedToolResult{
 				ToolCallID: block.ToolUseID, Content: content,
 			})
@@ -89,7 +89,8 @@ func (m NormalizedMessage) ToolResultsList() []NormalizedToolResult {
 	return results
 }
 
-func toolResultText(raw json.RawMessage) string {
+// ToolResultText extracts plain text from a raw tool_result JSON content payload.
+func ToolResultText(raw json.RawMessage) string {
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
 		return text

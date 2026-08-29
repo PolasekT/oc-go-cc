@@ -2,6 +2,8 @@ package transformer
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"github.com/routatic/proxy/internal/config"
 	"github.com/routatic/proxy/internal/core"
@@ -47,6 +49,17 @@ func NormalizedToResponses(req *core.NormalizedRequest, model config.ModelConfig
 		Model: model.ModelID,
 	}
 
+	// Add reasoning if model supports it
+	if model.ReasoningEffort != "" {
+		responsesReq.Reasoning = &types.ResponsesReasoning{
+			Effort: model.ReasoningEffort,
+		}
+	} else if req.ReasoningEffort != "" {
+		responsesReq.Reasoning = &types.ResponsesReasoning{
+			Effort: req.ReasoningEffort,
+		}
+	}
+
 	// System prompt becomes a "developer" role input.
 	if req.SystemPrompt != "" {
 		responsesReq.Input = append(responsesReq.Input, types.ResponsesInput{
@@ -57,18 +70,42 @@ func NormalizedToResponses(req *core.NormalizedRequest, model config.ModelConfig
 
 	// Convert messages.
 	for _, msg := range req.Messages {
-		input := types.ResponsesInput{Role: msg.Role}
-		content := msg.TextContent()
-
-		// For assistant messages with tool calls, serialize as text.
-		for _, tc := range msg.ToolCallsList() {
-			content += "[Tool: " + tc.Name + "(" + tc.Arguments + ")]"
+		var contentParts []string
+		for _, block := range msg.Blocks {
+			switch block.Type {
+			case "text":
+				if block.Text != "" {
+					contentParts = append(contentParts, block.Text)
+				}
+			case "tool_use":
+				contentParts = append(contentParts, fmt.Sprintf("[Tool: %s(%s)]", block.Name, string(block.Input)))
+			case "tool_result":
+				resText := core.ToolResultText(block.Content)
+				if resText == "" {
+					resText = block.Text
+				}
+				if resText != "" {
+					contentParts = append(contentParts, fmt.Sprintf("[Tool Result: %s]", resText))
+				} else {
+					contentParts = append(contentParts, "[Tool Result]")
+				}
+			case "image":
+				contentParts = append(contentParts, "[Image]")
+			}
 		}
 
-		if content != "" {
-			input.Content = rawJSONString(content)
+		text := strings.Join(contentParts, "\n")
+		if text == "" {
+			text = msg.TextContent()
 		}
-		responsesReq.Input = append(responsesReq.Input, input)
+		if text == "" {
+			text = " " // Always ensure Content is non-empty to satisfy OpenAI Responses schema
+		}
+
+		responsesReq.Input = append(responsesReq.Input, types.ResponsesInput{
+			Role:    msg.Role,
+			Content: rawJSONString(text),
+		})
 	}
 
 	// Convert tools.

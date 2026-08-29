@@ -1430,3 +1430,63 @@ func TestProxyStream_NoDuplicateToolStopsOnErrorAfterFinishReason(t *testing.T) 
 		t.Errorf("penultimate event = %+v, want message_delta with stop_reason tool_use", got)
 	}
 }
+
+func TestProxyResponsesStream_ToolCallsAndText(t *testing.T) {
+	handler := NewStreamHandler()
+	w := newMockResponseWriter()
+	body := "data: " + `{"type":"response.output_text.delta","delta":"I will read the file."}` + "\n\n" +
+		"data: " + `{"type":"response.output_item.added","item":{"id":"item_1","type":"function_call","name":"Read","call_id":"call_1"}}` + "\n\n" +
+		"data: " + `{"type":"response.function_call_arguments.delta","delta":"{\"file_path\":"}` + "\n\n" +
+		"data: " + `{"type":"response.function_call_arguments.delta","delta":"\"main.go\"}"}` + "\n\n" +
+		"data: " + `{"type":"response.function_call_arguments.done"}` + "\n\n" +
+		"data: " + `{"type":"response.done","response":{"status":"completed","usage":{"input_tokens":100,"output_tokens":50}}}` + "\n\n"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := handler.ProxyResponsesStream(w, io.NopCloser(strings.NewReader(body)), "gpt-5.6-luna", ctx, 0, cancel); err != nil {
+		t.Fatalf("ProxyResponsesStream() error = %v, want nil", err)
+	}
+
+	events := parseSSEEvents(t, w.buf.String())
+	var hasTextStart, hasTextDelta, hasToolStart, hasToolDelta, hasToolStop, hasMsgDelta, hasMsgStop bool
+	for _, ev := range events {
+		switch ev.Type {
+		case "content_block_start":
+			if ev.ContentBlock != nil {
+				if ev.ContentBlock.Type == "text" {
+					hasTextStart = true
+				} else if ev.ContentBlock.Type == "tool_use" {
+					hasToolStart = true
+					if ev.ContentBlock.Name != "Read" || ev.ContentBlock.ID != "call_1" {
+						t.Errorf("unexpected tool block: %+v", ev.ContentBlock)
+					}
+				}
+			}
+		case "content_block_delta":
+			if ev.Delta != nil {
+				if ev.Delta.Type == "text_delta" {
+					hasTextDelta = true
+				} else if ev.Delta.Type == "input_json_delta" {
+					hasToolDelta = true
+				}
+			}
+		case "content_block_stop":
+			hasToolStop = true
+		case "message_delta":
+			hasMsgDelta = true
+			if ev.Delta == nil || ev.Delta.StopReason != "tool_use" {
+				t.Errorf("expected stop_reason tool_use, got %+v", ev.Delta)
+			}
+			if ev.Usage == nil || ev.Usage.InputTokens != 100 || ev.Usage.OutputTokens != 50 {
+				t.Errorf("expected usage 100/50, got %+v", ev.Usage)
+			}
+		case "message_stop":
+			hasMsgStop = true
+		}
+	}
+
+	if !hasTextStart || !hasTextDelta || !hasToolStart || !hasToolDelta || !hasToolStop || !hasMsgDelta || !hasMsgStop {
+		t.Fatalf("missing expected events in stream: %+v", events)
+	}
+}
