@@ -874,6 +874,7 @@ func TestHandleMessages_UnknownProvider(t *testing.T) {
 	}
 
 	handler := NewMessagesHandler(
+		atomicCfg,
 		ocClient,
 		nil, // providerRegistry
 		modelRouter,
@@ -957,6 +958,7 @@ func TestHandleMessages_StreamingMinimaxM3_UsesAnthropicEndpoint(t *testing.T) {
 	}
 
 	handler := NewMessagesHandler(
+		atomicCfg,
 		ocClient,
 		nil, // providerRegistry
 		modelRouter,
@@ -1072,6 +1074,7 @@ func TestHandleNonStreaming_GoAnthropicModel_ReplacesModelInBody(t *testing.T) {
 	}
 
 	handler := NewMessagesHandler(
+		atomicCfg,
 		ocClient,
 		nil, // providerRegistry
 		modelRouter,
@@ -1190,6 +1193,7 @@ func TestHandleNonStreaming_ZenAnthropicModel_ReplacesModelInBody(t *testing.T) 
 	}
 
 	handler := NewMessagesHandler(
+		atomicCfg,
 		ocClient,
 		nil, // providerRegistry
 		modelRouter,
@@ -1555,6 +1559,7 @@ func TestHandleNonStreaming_ParentContextCanceled_No502(t *testing.T) {
 
 	m := metrics.New()
 	handler := NewMessagesHandler(
+		atomicCfg,
 		ocClient,
 		nil, // providerRegistry
 		modelRouter,
@@ -1638,6 +1643,7 @@ func TestHandleNonStreaming_ParentDeadlineExceeded_No502(t *testing.T) {
 
 	m := metrics.New()
 	handler := NewMessagesHandler(
+		atomicCfg,
 		ocClient,
 		nil, // providerRegistry
 		modelRouter,
@@ -1890,3 +1896,165 @@ func TestHandleStreaming_AnthropicRaw_NoKeepaliveInjection(t *testing.T) {
 		t.Errorf("keepalive comment leaked into Anthropic raw stream output (concurrent write bug):\n%s", body)
 	}
 }
+
+func TestHandleMessages_TitleGenerationInterceptor_Dummy(t *testing.T) {
+	cfg := &config.Config{
+		APIKey: "test-key",
+		Interceptors: config.InterceptorsConfig{
+			TitleGeneration: config.TitleGenerationConfig{
+				Enabled:       true,
+				Action:        "dummy",
+				DummyResponse: "My Automated Title",
+			},
+		},
+	}
+	atomicCfg := config.NewAtomicConfig(cfg, "")
+	ocClient := client.NewOpenCodeClient(atomicCfg, nil)
+	modelRouter := router.NewModelRouter(atomicCfg)
+	tokenCounter, _ := token.NewCounter()
+
+	handler := NewMessagesHandler(
+		atomicCfg,
+		ocClient,
+		nil,
+		modelRouter,
+		nil,
+		tokenCounter,
+		metrics.New(),
+		nil,
+		nil,
+		nil,
+	)
+
+	// Test Non-streaming
+	t.Run("non-streaming", func(t *testing.T) {
+		requestBody := `{
+			"model": "claude-3-5-sonnet",
+			"system": "Generate a concise, sentence-case title for this conversation",
+			"messages": [{"role": "user", "content": "How do I write a binary search in Go?"}]
+		}`
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(requestBody))
+		req.Header.Set("Content-Type", "application/json")
+
+		handler.HandleMessages(recorder, req)
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", recorder.Code)
+		}
+		var resp types.MessageResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if len(resp.Content) == 0 || !strings.Contains(resp.Content[0].Text, "My Automated Title") {
+			t.Errorf("unexpected content: %+v", resp.Content)
+		}
+	})
+
+	// Test Streaming
+	t.Run("streaming", func(t *testing.T) {
+		requestBody := `{
+			"model": "claude-3-5-sonnet",
+			"stream": true,
+			"system": "Generate a concise, sentence-case title for this conversation",
+			"messages": [{"role": "user", "content": "How do I write a binary search in Go?"}]
+		}`
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(requestBody))
+		req.Header.Set("Content-Type", "application/json")
+
+		handler.HandleMessages(recorder, req)
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", recorder.Code)
+		}
+		body := recorder.Body.String()
+		if !strings.Contains(body, "My Automated Title") {
+			t.Errorf("streaming response missing dummy title: %s", body)
+		}
+	})
+}
+
+func TestHandleMessages_SecurityClassifierInterceptor_Procedural(t *testing.T) {
+	cfg := &config.Config{
+		APIKey: "test-key",
+		Interceptors: config.InterceptorsConfig{
+			SecurityClassifier: config.SecurityClassifierConfig{
+				Enabled: true,
+				Action:  "procedural",
+				Permissions: config.PermissionsConfig{
+					Allow: []string{`^git status$`, `^ls -la`},
+					Deny:  []string{`^rm -rf /`, `^curl http://evil`},
+				},
+			},
+		},
+	}
+	atomicCfg := config.NewAtomicConfig(cfg, "")
+	ocClient := client.NewOpenCodeClient(atomicCfg, nil)
+	modelRouter := router.NewModelRouter(atomicCfg)
+	tokenCounter, _ := token.NewCounter()
+
+	handler := NewMessagesHandler(
+		atomicCfg,
+		ocClient,
+		nil,
+		modelRouter,
+		nil,
+		tokenCounter,
+		metrics.New(),
+		nil,
+		nil,
+		nil,
+	)
+
+	// Test Denied command
+	t.Run("denied command", func(t *testing.T) {
+		requestBody := `{
+			"model": "claude-3-5-sonnet",
+			"system": "You are a security monitor for autonomous AI coding agents...",
+			"messages": [{"role": "user", "content": "Bash(rm -rf /)"}]
+		}`
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(requestBody))
+		req.Header.Set("Content-Type", "application/json")
+
+		handler.HandleMessages(recorder, req)
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", recorder.Code)
+		}
+		var resp types.MessageResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if len(resp.Content) == 0 || !strings.Contains(resp.Content[0].Text, "<block>yes</block>") {
+			t.Errorf("expected blocked=yes, got: %+v", resp.Content)
+		}
+	})
+
+	// Test Allowed command
+	t.Run("allowed command", func(t *testing.T) {
+		requestBody := `{
+			"model": "claude-3-5-sonnet",
+			"system": "You are a security monitor for autonomous AI coding agents...",
+			"messages": [{"role": "user", "content": "Bash(git status)"}]
+		}`
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(requestBody))
+		req.Header.Set("Content-Type", "application/json")
+
+		handler.HandleMessages(recorder, req)
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", recorder.Code)
+		}
+		var resp types.MessageResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if len(resp.Content) == 0 || !strings.Contains(resp.Content[0].Text, "<block>no</block>") {
+			t.Errorf("expected blocked=no, got: %+v", resp.Content)
+		}
+	})
+}
+

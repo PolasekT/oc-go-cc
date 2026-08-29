@@ -305,7 +305,7 @@ func TestResolveRequestedModel_UsesFallbacks(t *testing.T) {
 
 	router := NewModelRouter(newTestAtomicConfig(cfg))
 
-	result, ok, err := router.resolveRequestedModel(cfg, "kimi-k2.6", false)
+	result, ok, err := router.resolveRequestedModel(cfg, "kimi-k2.6", false, 0, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -492,7 +492,7 @@ func TestUnknownProvider(t *testing.T) {
 	router := NewModelRouterWithCatalog(atomic, catalogPath)
 
 	t.Run("unknown provider in canonical reference returns ErrUnknownProvider", func(t *testing.T) {
-		_, _, err := router.resolveRequestedModel(cfg, "deepseek/deepseek-v4-flash@nonexistent-provider", false)
+		_, _, err := router.resolveRequestedModel(cfg, "deepseek/deepseek-v4-flash@nonexistent-provider", false, 0, "")
 		if err == nil {
 			t.Fatal("expected error for unknown provider, got nil")
 		}
@@ -502,7 +502,7 @@ func TestUnknownProvider(t *testing.T) {
 	})
 
 	t.Run("unknown short id falls back silently to opencode-go", func(t *testing.T) {
-		result, ok, err := router.resolveRequestedModel(cfg, "totally-unknown-short-id", false)
+		result, ok, err := router.resolveRequestedModel(cfg, "totally-unknown-short-id", false, 0, "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -614,7 +614,7 @@ func TestResolveRequestedModel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			router := NewModelRouterWithCatalog(atomic, tt.catalogPath)
-			result, ok, err := router.resolveRequestedModel(cfg, tt.requestedModel, tt.needsVision)
+			result, ok, err := router.resolveRequestedModel(cfg, tt.requestedModel, tt.needsVision, 0, "")
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got nil")
@@ -1219,3 +1219,210 @@ func TestRouteWithOverride_ReasonReportsOverrideModel(t *testing.T) {
 		t.Errorf("expected reason to name the override model, got: %s", result.Reason)
 	}
 }
+
+func TestRouteWithRegexOverride(t *testing.T) {
+	cfg := &config.Config{
+		ModelRegexOverrides: map[string]config.ModelConfig{
+			`^claude-3-7-sonnet.*`: {
+				Provider: "anth-comp",
+				ModelID:  "claude-3-7-sonnet-20250219",
+			},
+			`^claude-3-5-haiku.*`: {
+				Provider: "anth-comp",
+				ModelID:  "claude-3-5-haiku-20241022",
+			},
+		},
+		Fallbacks: map[string][]config.ModelConfig{
+			`^claude-3-7-sonnet.*`: {{Provider: "opencode-go", ModelID: "glm-5.1"}},
+			"default":              {{Provider: "opencode-go", ModelID: "default-fallback"}},
+		},
+	}
+	router := NewModelRouter(newTestAtomicConfig(cfg))
+
+	// Test matching regex
+	res, ok := router.RouteWithRegexOverride("claude-3-7-sonnet-latest")
+	if !ok {
+		t.Fatal("expected regex override to match")
+	}
+	if res.Primary.ModelID != "claude-3-7-sonnet-20250219" {
+		t.Errorf("expected model claude-3-7-sonnet-20250219, got %s", res.Primary.ModelID)
+	}
+	if len(res.Fallbacks) != 1 || res.Fallbacks[0].ModelID != "glm-5.1" {
+		t.Errorf("expected glm-5.1 fallback, got %+v", res.Fallbacks)
+	}
+
+	// Test matching second regex
+	res, ok = router.RouteWithRegexOverride("claude-3-5-haiku-20241022")
+	if !ok {
+		t.Fatal("expected regex override to match")
+	}
+	if res.Primary.ModelID != "claude-3-5-haiku-20241022" {
+		t.Errorf("expected model claude-3-5-haiku-20241022, got %s", res.Primary.ModelID)
+	}
+	if len(res.Fallbacks) != 1 || res.Fallbacks[0].ModelID != "default-fallback" {
+		t.Errorf("expected default-fallback, got %+v", res.Fallbacks)
+	}
+
+	// Test non-matching regex
+	_, ok = router.RouteWithRegexOverride("gpt-4o")
+	if ok {
+		t.Error("expected gpt-4o not to match regex overrides")
+	}
+}
+
+func TestRouteWithEffortOverride(t *testing.T) {
+	cfg := &config.Config{
+		ModelEffortOverrides: map[string]map[string]config.ModelConfig{
+			"claude-3-7-sonnet": {
+				"low":  {Provider: "anth-comp", ModelID: "claude-3-5-haiku"},
+				"high": {Provider: "anth-comp", ModelID: "claude-3-7-sonnet"},
+			},
+			"complex": {
+				"low":  {Provider: "opencode-go", ModelID: "qwen3.6-plus"},
+				"high": {Provider: "opencode-go", ModelID: "glm-5.1"},
+			},
+		},
+		Fallbacks: map[string][]config.ModelConfig{
+			"claude-3-7-sonnet:low": {{Provider: "opencode-go", ModelID: "fallback-low"}},
+			"default":               {{Provider: "opencode-go", ModelID: "default-fallback"}},
+		},
+	}
+	router := NewModelRouter(newTestAtomicConfig(cfg))
+
+	res, ok := router.RouteWithEffortOverride("claude-3-7-sonnet", "low")
+	if !ok {
+		t.Fatal("expected effort override to match")
+	}
+	if res.Primary.ModelID != "claude-3-5-haiku" {
+		t.Errorf("expected claude-3-5-haiku, got %s", res.Primary.ModelID)
+	}
+	if len(res.Fallbacks) != 1 || res.Fallbacks[0].ModelID != "fallback-low" {
+		t.Errorf("expected fallback-low, got %+v", res.Fallbacks)
+	}
+
+	res, ok = router.RouteWithEffortOverride("claude-3-7-sonnet", "medium")
+	if ok {
+		t.Error("expected medium not to match")
+	}
+}
+
+func TestRoute_RespectRequestedModelUseEffort(t *testing.T) {
+	cfg := &config.Config{
+		RespectRequestedModelUseEffort: true,
+		Models: map[string]config.ModelConfig{
+			"claude-3-7-sonnet": {Provider: "anth-comp", ModelID: "claude-3-7-sonnet-default"},
+		},
+		ModelEffortOverrides: map[string]map[string]config.ModelConfig{
+			"claude-3-7-sonnet": {
+				"low": {Provider: "anth-comp", ModelID: "claude-3-5-haiku"},
+			},
+		},
+	}
+	router := NewModelRouter(newTestAtomicConfig(cfg))
+	messages := []MessageContent{{Role: "user", Content: "Hello"}}
+
+	// Case 1: Flag true, effort provided, match found
+	res, err := router.Route(messages, 100, "claude-3-7-sonnet", "low")
+	if err != nil {
+		t.Fatalf("Route() error: %v", err)
+	}
+	if res.Primary.ModelID != "claude-3-5-haiku" {
+		t.Errorf("expected claude-3-5-haiku, got %s", res.Primary.ModelID)
+	}
+
+	// Case 2: Flag true, effort provided, no match found -> requested model default
+	res, err = router.Route(messages, 100, "claude-3-7-sonnet", "high")
+	if err != nil {
+		t.Fatalf("Route() error: %v", err)
+	}
+	if res.Primary.ModelID != "claude-3-7-sonnet-default" {
+		t.Errorf("expected claude-3-7-sonnet-default, got %s", res.Primary.ModelID)
+	}
+
+	// Case 3: Flag false -> requested model default
+	cfg.RespectRequestedModelUseEffort = false
+	res, err = router.Route(messages, 100, "claude-3-7-sonnet", "low")
+	if err != nil {
+		t.Fatalf("Route() error: %v", err)
+	}
+	if res.Primary.ModelID != "claude-3-7-sonnet-default" {
+		t.Errorf("expected claude-3-7-sonnet-default, got %s", res.Primary.ModelID)
+	}
+}
+
+func TestRoute_RespectRequestedModelUseContextThreshold(t *testing.T) {
+	cfg := &config.Config{
+		RespectRequestedModelUseContextThreshold: true,
+		Models: map[string]config.ModelConfig{
+			"my-custom-model": {
+				Provider:         "opencode-go",
+				ModelID:          "my-custom-model",
+				ContextThreshold: 5000,
+			},
+			"default": {
+				Provider: "opencode-go",
+				ModelID:  "default-scenario-model",
+			},
+			"long_context": {
+				Provider: "opencode-go",
+				ModelID:  "long-context-model",
+			},
+		},
+	}
+	router := NewModelRouter(newTestAtomicConfig(cfg))
+	messages := []MessageContent{{Role: "user", Content: "Hello"}}
+
+	// Case 1: under threshold -> requested model honored
+	res, err := router.Route(messages, 3000, "my-custom-model")
+	if err != nil {
+		t.Fatalf("Route() error: %v", err)
+	}
+	if res.Primary.ModelID != "my-custom-model" {
+		t.Errorf("expected my-custom-model, got %s", res.Primary.ModelID)
+	}
+
+	// Case 2: over threshold -> bypass requested model and route via scenario
+	res, err = router.Route(messages, 6000, "my-custom-model")
+	if err != nil {
+		t.Fatalf("Route() error: %v", err)
+	}
+	if res.Primary.ModelID != "default-scenario-model" {
+		t.Errorf("expected default-scenario-model (bypassed), got %s", res.Primary.ModelID)
+	}
+}
+
+func TestRoute_EnableEffortScenarioRouting(t *testing.T) {
+	cfg := &config.Config{
+		EnableEffortScenarioRouting: true,
+		Models: map[string]config.ModelConfig{
+			"default": {Provider: "opencode-go", ModelID: "default-model"},
+			"complex": {Provider: "opencode-go", ModelID: "complex-model"},
+		},
+		ModelEffortOverrides: map[string]map[string]config.ModelConfig{
+			"complex": {
+				"low": {Provider: "opencode-go", ModelID: "complex-low-effort"},
+			},
+		},
+	}
+	router := NewModelRouter(newTestAtomicConfig(cfg))
+	messages := []MessageContent{{Role: "user", Content: "architect a microservice architecture"}} // triggers complex
+
+	// Flag true, effort provided, match found
+	res, err := router.Route(messages, 100, "", "low")
+	if err != nil {
+		t.Fatalf("Route() error: %v", err)
+	}
+	if res.Primary.ModelID != "complex-low-effort" {
+		t.Errorf("expected complex-low-effort, got %s", res.Primary.ModelID)
+	}
+
+	// Flag true, effort provided, no match -> scenario model
+	res, err = router.Route(messages, 100, "", "high")
+	if err != nil {
+		t.Fatalf("Route() error: %v", err)
+	}
+	if res.Primary.ModelID != "complex-model" {
+		t.Errorf("expected complex-model, got %s", res.Primary.ModelID)
+	}
+}
+

@@ -73,6 +73,7 @@ func NewServer(atomic *config.AtomicConfig, captureLogger *debug.CaptureLogger) 
 	_ = providerRegistry.Register(provider.NewOpenCodeGoProvider(atomic))
 	_ = providerRegistry.Register(provider.NewOpenCodeZenProvider(atomic))
 	_ = providerRegistry.Register(provider.NewAWSBedrockProvider(atomic))
+	_ = providerRegistry.Register(provider.NewAnthCompProvider(atomic))
 
 	// Create status store for the statusline endpoint.
 	statusStore := status.NewStore(0)
@@ -118,6 +119,7 @@ func NewServer(atomic *config.AtomicConfig, captureLogger *debug.CaptureLogger) 
 	}
 
 	messagesHandler := handlers.NewMessagesHandler(
+		atomic,
 		openCodeClient,
 		providerRegistry,
 		modelRouter,

@@ -31,6 +31,9 @@ const (
 	defaultZenGeminiBaseURL    = "https://opencode.ai/zen/v1/models"
 
 	defaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
+
+	defaultAnthCompBaseURL          = "https://api.anthropic.com/v1/chat/completions"
+	defaultAnthCompAnthropicBaseURL = "https://api.anthropic.com/v1/messages"
 )
 
 // envVarPattern matches ${ENV_VAR} placeholders in config values.
@@ -204,6 +207,27 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.OpenRouter.APIKey = ""
 	}
 
+	if v := envValue("ROUTATIC_PROXY_ANTH_COMP_API_KEY"); v != "" {
+		cfg.AnthropicCompatible.APIKey = v
+		cfg.AnthropicCompatible.APIKeys = nil
+	} else if v := envValue("ANTH_COMP_API_KEY"); v != "" {
+		cfg.AnthropicCompatible.APIKey = v
+		cfg.AnthropicCompatible.APIKeys = nil
+	} else if v := envValue("ANTHROPIC_API_KEY"); v != "" {
+		cfg.AnthropicCompatible.APIKey = v
+		cfg.AnthropicCompatible.APIKeys = nil
+	}
+	if v := envValue("ROUTATIC_PROXY_ANTH_COMP_API_KEYS"); v != "" {
+		cfg.AnthropicCompatible.APIKeys = parseCommaSeparatedKeys(v)
+		cfg.AnthropicCompatible.APIKey = ""
+	}
+	if v := envValue("ROUTATIC_PROXY_ANTH_COMP_URL"); v != "" {
+		cfg.AnthropicCompatible.BaseURL = v
+	}
+	if v := envValue("ROUTATIC_PROXY_ANTH_COMP_ANTHROPIC_URL"); v != "" {
+		cfg.AnthropicCompatible.AnthropicBaseURL = v
+	}
+
 	if v := envValue("ROUTATIC_PROXY_HOST"); v != "" {
 		cfg.Host = v
 	}
@@ -293,6 +317,22 @@ func applyDefaults(cfg *Config) {
 			cfg.OpenCodeZen.StreamTimeoutMs = cfg.OpenCodeZen.TimeoutMs
 		}
 	}
+	if cfg.AnthropicCompatible.BaseURL == "" {
+		cfg.AnthropicCompatible.BaseURL = defaultAnthCompBaseURL
+	}
+	if cfg.AnthropicCompatible.AnthropicBaseURL == "" {
+		cfg.AnthropicCompatible.AnthropicBaseURL = defaultAnthCompAnthropicBaseURL
+	}
+	if cfg.AnthropicCompatible.TimeoutMs == 0 {
+		cfg.AnthropicCompatible.TimeoutMs = defaultTimeoutMs
+	}
+	if cfg.AnthropicCompatible.StreamTimeoutMs == 0 {
+		if cfg.AnthropicCompatible.StreamingTimeoutMs > 0 {
+			cfg.AnthropicCompatible.StreamTimeoutMs = cfg.AnthropicCompatible.StreamingTimeoutMs
+		} else {
+			cfg.AnthropicCompatible.StreamTimeoutMs = cfg.AnthropicCompatible.TimeoutMs
+		}
+	}
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = defaultLogLevel
 	}
@@ -304,6 +344,15 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.ModelFamilyOverrides == nil {
 		cfg.ModelFamilyOverrides = make(map[string]ModelConfig)
+	}
+	if cfg.ModelEffortOverrides == nil {
+		cfg.ModelEffortOverrides = make(map[string]map[string]ModelConfig)
+	}
+	if cfg.ModelRegexOverrides == nil {
+		cfg.ModelRegexOverrides = make(map[string]ModelConfig)
+	}
+	if cfg.Interceptors.TitleGeneration.DummyResponse == "" {
+		cfg.Interceptors.TitleGeneration.DummyResponse = "Conversation Title"
 	}
 	if cfg.Catalog.MaxAgeHours == 0 {
 		cfg.Catalog.MaxAgeHours = defaultCatalogMaxAge
@@ -362,11 +411,30 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("openrouter.api_keys: %w", err)
 	}
 
+	if err := validateSingleAPIKey(cfg.AnthropicCompatible.APIKey); err != nil {
+		return fmt.Errorf("anth_comp.api_key: %w", err)
+	}
+	if err := validateAPIKeys(cfg.AnthropicCompatible.APIKeys); err != nil {
+		return fmt.Errorf("anth_comp.api_keys: %w", err)
+	}
+
 	if err := validateModelOverrides(cfg.ModelOverrides); err != nil {
 		return err
 	}
 
 	if err := validateModelFamilyOverrides(cfg.ModelFamilyOverrides); err != nil {
+		return err
+	}
+
+	if err := validateModelRegexOverrides(cfg.ModelRegexOverrides); err != nil {
+		return err
+	}
+
+	if err := validateModelEffortOverrides(cfg.ModelEffortOverrides); err != nil {
+		return err
+	}
+
+	if err := validateInterceptors(cfg.Interceptors); err != nil {
 		return err
 	}
 
@@ -477,6 +545,78 @@ func validateOverrideMap(label string, overrides map[string]ModelConfig) error {
 		}
 		if !IsKnownProvider(mc.Provider) {
 			return fmt.Errorf("%s[%q] has invalid provider %q (must be %s)", label, key, mc.Provider, quotedKnownProviders())
+		}
+	}
+	return nil
+}
+
+// validateModelRegexOverrides ensures each regex pattern is valid regex and has valid model config.
+func validateModelRegexOverrides(overrides map[string]ModelConfig) error {
+	for pattern, mc := range overrides {
+		if strings.TrimSpace(pattern) == "" {
+			return fmt.Errorf("model_regex_overrides has an empty regex pattern")
+		}
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("model_regex_overrides[%q] has invalid regex pattern: %w", pattern, err)
+		}
+		if mc.ModelID == "" {
+			return fmt.Errorf("model_regex_overrides[%q] is missing required field model_id", pattern)
+		}
+		if !IsKnownProvider(mc.Provider) {
+			return fmt.Errorf("model_regex_overrides[%q] has invalid provider %q (must be %s)", pattern, mc.Provider, quotedKnownProviders())
+		}
+	}
+	return nil
+}
+
+// validateModelEffortOverrides ensures effort mappings have valid model configs.
+func validateModelEffortOverrides(overrides map[string]map[string]ModelConfig) error {
+	for key, effortMap := range overrides {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("model_effort_overrides has an empty model/scenario key")
+		}
+		for effort, mc := range effortMap {
+			if strings.TrimSpace(effort) == "" {
+				return fmt.Errorf("model_effort_overrides[%q] has an empty effort key", key)
+			}
+			if mc.ModelID == "" {
+				return fmt.Errorf("model_effort_overrides[%q][%q] is missing required field model_id", key, effort)
+			}
+			if !IsKnownProvider(mc.Provider) {
+				return fmt.Errorf("model_effort_overrides[%q][%q] has invalid provider %q (must be %s)", key, effort, mc.Provider, quotedKnownProviders())
+			}
+		}
+	}
+	return nil
+}
+
+// validateInterceptors validates interceptor configurations.
+func validateInterceptors(cfg InterceptorsConfig) error {
+	if cfg.TitleGeneration.Enabled {
+		if cfg.TitleGeneration.Action != "" && cfg.TitleGeneration.Action != "dummy" && cfg.TitleGeneration.Action != "redirect" {
+			return fmt.Errorf("interceptors.title_generation.action must be \"dummy\" or \"redirect\", got %q", cfg.TitleGeneration.Action)
+		}
+		if cfg.TitleGeneration.Action == "redirect" && cfg.TitleGeneration.RedirectModel == "" {
+			return fmt.Errorf("interceptors.title_generation.redirect_model is required when action is \"redirect\"")
+		}
+	}
+
+	if cfg.SecurityClassifier.Enabled {
+		if cfg.SecurityClassifier.Action != "" && cfg.SecurityClassifier.Action != "procedural" && cfg.SecurityClassifier.Action != "redirect" {
+			return fmt.Errorf("interceptors.security_classifier.action must be \"procedural\" or \"redirect\", got %q", cfg.SecurityClassifier.Action)
+		}
+		if cfg.SecurityClassifier.Action == "redirect" && cfg.SecurityClassifier.RedirectModel == "" {
+			return fmt.Errorf("interceptors.security_classifier.redirect_model is required when action is \"redirect\"")
+		}
+		for _, allowPattern := range cfg.SecurityClassifier.Permissions.Allow {
+			if _, err := regexp.Compile(allowPattern); err != nil {
+				return fmt.Errorf("interceptors.security_classifier.permissions.allow contains invalid regex %q: %w", allowPattern, err)
+			}
+		}
+		for _, denyPattern := range cfg.SecurityClassifier.Permissions.Deny {
+			if _, err := regexp.Compile(denyPattern); err != nil {
+				return fmt.Errorf("interceptors.security_classifier.permissions.deny contains invalid regex %q: %w", denyPattern, err)
+			}
 		}
 	}
 	return nil

@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,7 @@ import (
 
 // MessagesHandler handles /v1/messages requests.
 type MessagesHandler struct {
+	atomic              *config.AtomicConfig
 	client              *client.OpenCodeClient // kept for backward compat during migration
 	providerRegistry    *core.ProviderRegistry // new: provider dispatch
 	modelRouter         *router.ModelRouter
@@ -340,6 +342,7 @@ func startKeepaliveHeartbeat(ctx context.Context, rw *responseWriter, paused *in
 
 // NewMessagesHandler creates a new messages handler.
 func NewMessagesHandler(
+	atomic *config.AtomicConfig,
 	openCodeClient *client.OpenCodeClient,
 	providerRegistry *core.ProviderRegistry,
 	modelRouter *router.ModelRouter,
@@ -351,6 +354,7 @@ func NewMessagesHandler(
 	storage StorageWriter,
 ) *MessagesHandler {
 	return &MessagesHandler{
+		atomic:              atomic,
 		client:              openCodeClient,
 		providerRegistry:    providerRegistry,
 		modelRouter:         modelRouter,
@@ -485,11 +489,44 @@ func (h *MessagesHandler) HandleMessages(w http.ResponseWriter, r *http.Request)
 	}
 	h.metrics.RecordStage(metrics.StageTokenCount, time.Since(tokenStart))
 
+	// Extract effort if specified
+	var effort string
+	if anthropicReq.OutputConfig != nil && anthropicReq.OutputConfig.Effort != "" {
+		effort = anthropicReq.OutputConfig.Effort
+	}
+
+	// Interceptor checks
+	if h.atomic != nil {
+		cfg := h.atomic.Get()
+
+		// Check Title Generation Interceptor
+		if cfg.Interceptors.TitleGeneration.Enabled && isTitleGenerationRequest(systemText, &anthropicReq) {
+			if cfg.Interceptors.TitleGeneration.Action == "dummy" {
+				h.handleDummyTitleGeneration(w, &anthropicReq, cfg.Interceptors.TitleGeneration.DummyResponse, isStreaming, tokenCount)
+				return
+			} else if cfg.Interceptors.TitleGeneration.Action == "redirect" {
+				h.logger.Info("intercepted title generation, redirecting model", "from", anthropicReq.Model, "to", cfg.Interceptors.TitleGeneration.RedirectModel)
+				anthropicReq.Model = cfg.Interceptors.TitleGeneration.RedirectModel
+			}
+		}
+
+		// Check Security Classifier Interceptor
+		if cfg.Interceptors.SecurityClassifier.Enabled && isSecurityClassifierRequest(systemText, &anthropicReq) {
+			if cfg.Interceptors.SecurityClassifier.Action == "procedural" {
+				h.handleProceduralSecurityClassifier(w, &anthropicReq, cfg.Interceptors.SecurityClassifier.Permissions, isStreaming, tokenCount)
+				return
+			} else if cfg.Interceptors.SecurityClassifier.Action == "redirect" {
+				h.logger.Info("intercepted security classifier, redirecting model", "from", anthropicReq.Model, "to", cfg.Interceptors.SecurityClassifier.RedirectModel)
+				anthropicReq.Model = cfg.Interceptors.SecurityClassifier.RedirectModel
+			}
+		}
+	}
+
 	// Route to appropriate model and build fallback chain.
 	routeStart := time.Now()
 	facts := router.AnalyzeRequestFacts(routerMessages)
 	needsTools := len(anthropicReq.Tools) > 0
-	modelChain, routeResult, err := h.buildModelChain(anthropicReq.Model, routerMessages, tokenCount, isStreaming, anthropicReq.MaxTokens, facts.NeedsVision, needsTools)
+	modelChain, routeResult, err := h.buildModelChain(anthropicReq.Model, routerMessages, tokenCount, isStreaming, anthropicReq.MaxTokens, facts.NeedsVision, needsTools, effort)
 	if err != nil {
 		status := http.StatusInternalServerError
 		message := "routing failed"
@@ -551,13 +588,8 @@ func (h *MessagesHandler) filterCompatibleModels(chain []config.ModelConfig, req
 			continue
 		}
 		if err := validator.ValidateRequest(req, model); err != nil {
-			var compatErr *core.CompatibilityError
-			if errors.As(err, &compatErr) {
-				reasons = append(reasons, compatErr.Error())
-				h.logger.Info("model skipped by request compatibility", "model", model.ModelID, "reason", compatErr.Reason)
-				continue
-			}
-			return nil, err
+			reasons = append(reasons, fmt.Sprintf("%s: %v", model.ModelID, err))
+			continue
 		}
 		compatible = append(compatible, model)
 	}
@@ -575,10 +607,11 @@ func (h *MessagesHandler) filterCompatibleModels(chain []config.ModelConfig, req
 // respecting the streaming-scenario-routing toggle.
 //
 // Precedence:
-//  1. If requestedModel matches an entry in model_overrides (exact) or
-//     model_family_overrides (family keyword substring, e.g. "opus"), use that
-//     as the primary and append the scenario chain as a deduplicated safety net.
-//     Exact overrides win over family matches.
+//  1. If requestedModel matches an entry in model_overrides (exact),
+//     model_regex_overrides (regex match), or model_family_overrides
+//     (family keyword substring, e.g. "opus"), use that as the primary
+//     and append the scenario chain as a deduplicated safety net.
+//     Exact overrides win over regex matches, which win over family matches.
 //  2. Otherwise, fall through to scenario-based routing via routeOnce.
 func (h *MessagesHandler) buildModelChain(
 	requestedModel string,
@@ -588,17 +621,26 @@ func (h *MessagesHandler) buildModelChain(
 	requestedMaxTokens int,
 	needsVision bool,
 	needsTools bool,
+	effort ...string,
 ) ([]config.ModelConfig, router.RouteResult, error) {
 	var chain []config.ModelConfig
 	var result router.RouteResult
 
+	eff := ""
+	if len(effort) > 0 {
+		eff = effort[0]
+	}
+
 	if requestedModel != "" {
 		overrideResult, ok := h.modelRouter.RouteWithOverride(requestedModel)
+		if !ok {
+			overrideResult, ok = h.modelRouter.RouteWithRegexOverride(requestedModel)
+		}
 		if !ok {
 			overrideResult, ok = h.modelRouter.RouteWithFamilyOverride(requestedModel)
 		}
 		if ok {
-			scenarioResult, err := h.routeOnce(routerMessages, tokenCount, "", isStreaming)
+			scenarioResult, err := h.routeOnce(routerMessages, tokenCount, "", isStreaming, eff)
 			if err != nil {
 				return overrideResult.GetModelChain(), overrideResult, err
 			}
@@ -609,7 +651,7 @@ func (h *MessagesHandler) buildModelChain(
 
 	if chain == nil {
 		var err error
-		result, err = h.routeOnce(routerMessages, tokenCount, requestedModel, isStreaming)
+		result, err = h.routeOnce(routerMessages, tokenCount, requestedModel, isStreaming, eff)
 		if err != nil {
 			return nil, result, err
 		}
@@ -637,12 +679,17 @@ func (h *MessagesHandler) routeOnce(
 	tokenCount int,
 	requestedModel string,
 	isStreaming bool,
+	effort ...string,
 ) (router.RouteResult, error) {
+	eff := ""
+	if len(effort) > 0 {
+		eff = effort[0]
+	}
 	if isStreaming && !h.modelRouter.IsStreamingScenarioRoutingEnabled() {
 		// Streaming: use faster models to minimize TTFT (time-to-first-token)
-		return h.modelRouter.RouteForStreaming(routerMessages, tokenCount, requestedModel)
+		return h.modelRouter.RouteForStreaming(routerMessages, tokenCount, requestedModel, eff)
 	}
-	return h.modelRouter.Route(routerMessages, tokenCount, requestedModel)
+	return h.modelRouter.Route(routerMessages, tokenCount, requestedModel, eff)
 }
 
 // appendUniqueModels appends models from extra to base, skipping any model_id
@@ -664,6 +711,245 @@ func appendUniqueModels(base, extra []config.ModelConfig) []config.ModelConfig {
 		seen[m.ModelID] = struct{}{}
 	}
 	return base
+}
+
+func (h *MessagesHandler) handleDummyTitleGeneration(
+	w http.ResponseWriter,
+	req *types.MessageRequest,
+	dummyTitle string,
+	isStreaming bool,
+	tokenCount int,
+) {
+	h.logger.Info("handling title generation with dummy response", "in_toks", tokenCount, "title", dummyTitle)
+	content := fmt.Sprintf(`{"title": "%s"}`, dummyTitle)
+
+	if isStreaming {
+		h.sendDummyStreamResponse(w, content)
+	} else {
+		h.sendDummyNonStreamResponse(w, content)
+	}
+}
+
+func (h *MessagesHandler) handleProceduralSecurityClassifier(
+	w http.ResponseWriter,
+	req *types.MessageRequest,
+	perms config.PermissionsConfig,
+	isStreaming bool,
+	tokenCount int,
+) {
+	var userContent strings.Builder
+	for _, msg := range req.Messages {
+		if msg.Role == "user" {
+			userContent.WriteString(extractTextFromBlocks(msg.ContentBlocks()))
+		}
+	}
+	contentStr := userContent.String()
+
+	cmd := strings.TrimSpace(contentStr)
+	re := regexp.MustCompile(`(?:Bash\s+([^\n<]+)|(?s)Bash\((.*?)\))`)
+	matches := re.FindAllStringSubmatch(contentStr, -1)
+	if len(matches) > 0 {
+		lastMatch := matches[len(matches)-1]
+		if len(lastMatch) > 1 && lastMatch[1] != "" {
+			cmd = strings.TrimSpace(lastMatch[1])
+		} else if len(lastMatch) > 2 && lastMatch[2] != "" {
+			cmd = strings.TrimSpace(lastMatch[2])
+		}
+	}
+
+	testMatch := func(pattern string) bool {
+		if matched, err := regexp.MatchString(pattern, cmd); err == nil && matched {
+			return true
+		}
+		if matched, err := regexp.MatchString(pattern, contentStr); err == nil && matched {
+			return true
+		}
+		return false
+	}
+
+	blocked := false
+	reason := "Automated decision"
+	matchedRule := "default_allow"
+
+	for _, denyRegex := range perms.Deny {
+		if testMatch(denyRegex) {
+			blocked = true
+			reason = fmt.Sprintf("Matched deny rule: %s", denyRegex)
+			matchedRule = denyRegex
+			break
+		}
+	}
+
+	if !blocked {
+		for _, allowRegex := range perms.Allow {
+			if testMatch(allowRegex) {
+				blocked = false
+				reason = fmt.Sprintf("Matched allow rule: %s", allowRegex)
+				matchedRule = allowRegex
+				break
+			}
+		}
+	}
+
+	var blockText string
+	if blocked {
+		blockText = "yes"
+	} else {
+		blockText = "no"
+	}
+	content := fmt.Sprintf("<block>%s</block><reason>%s</reason>", blockText, reason)
+
+	cmdLog := cmd
+	if len(cmdLog) > 100 {
+		cmdLog = cmdLog[:100] + "..."
+	}
+
+	h.logger.Info("handling security classifier procedurally",
+		"in_toks", tokenCount,
+		"command", cmdLog,
+		"rule", matchedRule,
+		"blocked", blocked,
+	)
+
+	if isStreaming {
+		h.sendDummyStreamResponse(w, content)
+	} else {
+		h.sendDummyNonStreamResponse(w, content)
+	}
+}
+
+func (h *MessagesHandler) sendDummyNonStreamResponse(w http.ResponseWriter, text string) {
+	resp := types.MessageResponse{
+		ID:      "msg_dummy",
+		Type:    "message",
+		Role:    "assistant",
+		Model:   "dummy",
+		Content: []types.ContentBlock{{Type: "text", Text: text}},
+		Usage: types.Usage{
+			InputTokens:  10,
+			OutputTokens: 10,
+		},
+		StopReason: "end_turn",
+	}
+
+	data, _ := json.Marshal(resp)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (h *MessagesHandler) sendDummyStreamResponse(w http.ResponseWriter, text string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	id := "msg_dummy"
+	startEvent := types.MessageEvent{
+		Type: "message_start",
+		Message: &types.MessageResponse{
+			ID:      id,
+			Type:    "message",
+			Role:    "assistant",
+			Model:   "dummy",
+			Content: []types.ContentBlock{},
+			Usage:   types.Usage{InputTokens: 10},
+		},
+	}
+	_ = transformer.WriteSSEEvent(w, startEvent)
+
+	idx := 0
+	cbStartEvent := types.MessageEvent{
+		Type:  "content_block_start",
+		Index: &idx,
+		ContentBlock: &types.ContentBlock{
+			Type: "text",
+			Text: "",
+		},
+	}
+	_ = transformer.WriteSSEEvent(w, cbStartEvent)
+
+	cbDeltaEvent := types.MessageEvent{
+		Type:  "content_block_delta",
+		Index: &idx,
+		Delta: &types.Delta{
+			Type: "text_delta",
+			Text: text,
+		},
+	}
+	_ = transformer.WriteSSEEvent(w, cbDeltaEvent)
+
+	cbStopEvent := types.MessageEvent{
+		Type:  "content_block_stop",
+		Index: &idx,
+	}
+	_ = transformer.WriteSSEEvent(w, cbStopEvent)
+
+	msgDeltaEvent := types.MessageEvent{
+		Type: "message_delta",
+		Delta: &types.Delta{
+			StopReason: "end_turn",
+		},
+		Usage: &types.Usage{OutputTokens: 10},
+	}
+	_ = transformer.WriteSSEEvent(w, msgDeltaEvent)
+
+	msgStopEvent := types.MessageEvent{
+		Type: "message_stop",
+	}
+	_ = transformer.WriteSSEEvent(w, msgStopEvent)
+
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func isTitleGenerationRequest(systemText string, req *types.MessageRequest) bool {
+	lowerSys := strings.ToLower(systemText)
+	if strings.Contains(lowerSys, "generate a concise, sentence-case title") ||
+		strings.Contains(lowerSys, "generate a concise title") ||
+		strings.Contains(lowerSys, "generate a title for this conversation") ||
+		strings.Contains(lowerSys, "sentence-case title") ||
+		strings.Contains(lowerSys, "naming a coding session") ||
+		strings.Contains(lowerSys, "the title is a name for what the session is about") ||
+		strings.Contains(lowerSys, "return json with a single \"title\" field") {
+		return true
+	}
+	if req != nil {
+		for _, msg := range req.Messages {
+			for _, b := range msg.ContentBlocks() {
+				lowerText := strings.ToLower(b.Text)
+				if strings.Contains(lowerText, "generate a concise, sentence-case title") ||
+					strings.Contains(lowerText, "generate a concise title") ||
+					strings.Contains(lowerText, "generate a title for this conversation") ||
+					strings.Contains(lowerText, "sentence-case title") ||
+					strings.Contains(lowerText, "write the title in the predominant language of the session") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func isSecurityClassifierRequest(systemText string, req *types.MessageRequest) bool {
+	lowerSys := strings.ToLower(systemText)
+	if strings.Contains(lowerSys, "security monitor for autonomous ai coding agents") ||
+		strings.Contains(lowerSys, "security classifier") {
+		return true
+	}
+	if req != nil {
+		for _, msg := range req.Messages {
+			for _, b := range msg.ContentBlocks() {
+				lowerText := strings.ToLower(b.Text)
+				if strings.Contains(lowerText, "security monitor for autonomous ai coding agents") ||
+					strings.Contains(lowerText, "security classifier") {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // handleStreaming handles a streaming request with real-time SSE proxying.

@@ -762,9 +762,9 @@ func closeOpenBlock(w http.ResponseWriter, index int, contentStarted, reasoningS
 	}
 }
 
-// writeSSEEvent writes a single SSE event to the HTTP response writer.
+// WriteSSEEvent writes a single SSE event to the HTTP response writer.
 // Format: "event: <type>\ndata: <json>\n\n"
-func writeSSEEvent(w http.ResponseWriter, event types.MessageEvent) error {
+func WriteSSEEvent(w http.ResponseWriter, event types.MessageEvent) error {
 	data, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal event: %w", err)
@@ -772,6 +772,10 @@ func writeSSEEvent(w http.ResponseWriter, event types.MessageEvent) error {
 
 	_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, string(data))
 	return err
+}
+
+func writeSSEEvent(w http.ResponseWriter, event types.MessageEvent) error {
+	return WriteSSEEvent(w, event)
 }
 
 // generateID creates a unique identifier based on current time.

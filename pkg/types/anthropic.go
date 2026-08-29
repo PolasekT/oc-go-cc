@@ -21,7 +21,13 @@ type MessageRequest struct {
 	TopP         *float64        `json:"top_p,omitempty"`
 	Metadata     *Metadata       `json:"metadata,omitempty"`
 	Thinking     json.RawMessage `json:"thinking,omitempty"`
+	OutputConfig *OutputConfig   `json:"output_config,omitempty"`
 	CacheControl *CacheControl   `json:"cache_control,omitempty"`
+}
+
+// OutputConfig represents the output configuration for the request.
+type OutputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 // SystemText extracts the system prompt text from the raw system field.

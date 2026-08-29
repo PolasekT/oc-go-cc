@@ -14,25 +14,32 @@ type Config struct {
 	Host                           string                   `json:"host"`
 	Port                           int                      `json:"port"`
 	HotReload                      bool                     `json:"hot_reload"`
-	EnableStreamingScenarioRouting bool                     `json:"enable_streaming_scenario_routing"`
-	EnableCostBasedRouting         bool                     `json:"enable_cost_based_routing"`
-	CostRouting                    *CostRoutingConfig       `json:"cost_routing,omitempty"`
-	RespectRequestedModel          *bool                    `json:"respect_requested_model,omitempty"`
-	Models                         map[string]ModelConfig   `json:"models"`
-	Fallbacks                      map[string][]ModelConfig `json:"fallbacks"`
-	ModelOverrides                 map[string]ModelConfig   `json:"model_overrides"`
-	ModelFamilyOverrides           map[string]ModelConfig   `json:"model_family_overrides"`
-	AWSBedrock                     AWSBedrockConfig         `json:"aws_bedrock"`
-	OpenCodeGo                     OpenCodeGoConfig         `json:"opencode_go"`
-	OpenCodeZen                    OpenCodeZenConfig        `json:"opencode_zen"`
-	OpenRouter                     OpenRouterConfig         `json:"openrouter"`
-	AnthropicFirst                 AnthropicFirstConfig     `json:"anthropic_first"`
-	Logging                        LoggingConfig            `json:"logging"`
-	Debug                          DebugConfig              `json:"debug"`
-	Catalog                        CatalogConfig            `json:"catalog"`
-	Performance                    PerformanceConfig        `json:"performance,omitempty"`
-	Storage                        *StorageConfig           `json:"storage,omitempty"`
-	UpdateChannel                  string                   `json:"update_channel,omitempty"`
+	EnableStreamingScenarioRouting           bool                              `json:"enable_streaming_scenario_routing"`
+	EnableCostBasedRouting                   bool                              `json:"enable_cost_based_routing"`
+	CostRouting                              *CostRoutingConfig                `json:"cost_routing,omitempty"`
+	RespectRequestedModel                    *bool                             `json:"respect_requested_model,omitempty"`
+	EnableEffortScenarioRouting              bool                              `json:"enable_effort_scenario_routing"`
+	RespectRequestedModelUseEffort           bool                              `json:"respect_requested_model_use_effort"`
+	RespectRequestedModelUseContextThreshold bool                              `json:"respect_requested_model_use_context_threshold"`
+	Models                                   map[string]ModelConfig            `json:"models"`
+	Fallbacks                                map[string][]ModelConfig          `json:"fallbacks"`
+	ModelOverrides                           map[string]ModelConfig            `json:"model_overrides"`
+	ModelFamilyOverrides                     map[string]ModelConfig            `json:"model_family_overrides"`
+	ModelEffortOverrides                     map[string]map[string]ModelConfig `json:"model_effort_overrides"`
+	ModelRegexOverrides                      map[string]ModelConfig            `json:"model_regex_overrides"`
+	AWSBedrock                               AWSBedrockConfig                  `json:"aws_bedrock"`
+	OpenCodeGo                               OpenCodeGoConfig                  `json:"opencode_go"`
+	OpenCodeZen                              OpenCodeZenConfig                 `json:"opencode_zen"`
+	OpenRouter                               OpenRouterConfig                  `json:"openrouter"`
+	AnthropicCompatible                      AnthropicCompatibleConfig         `json:"anth_comp"`
+	AnthropicFirst                           AnthropicFirstConfig              `json:"anthropic_first"`
+	Interceptors                             InterceptorsConfig                `json:"interceptors"`
+	Logging                                  LoggingConfig                     `json:"logging"`
+	Debug                                    DebugConfig                       `json:"debug"`
+	Catalog                                  CatalogConfig                     `json:"catalog"`
+	Performance                              PerformanceConfig                 `json:"performance,omitempty"`
+	Storage                                  *StorageConfig                    `json:"storage,omitempty"`
+	UpdateChannel                            string                            `json:"update_channel,omitempty"`
 }
 
 // PerformanceConfig controls bounded in-process latency optimizations.
@@ -208,6 +215,57 @@ func (c *OpenCodeZenConfig) EffectiveAPIKeys() []string {
 		return []string{c.APIKey}
 	}
 	return nil
+}
+
+// AnthropicCompatibleConfig holds the upstream Anthropic-compatible API settings.
+type AnthropicCompatibleConfig struct {
+	BaseURL            string   `json:"base_url"`
+	AnthropicBaseURL   string   `json:"anthropic_base_url,omitempty"`
+	APIKey             string   `json:"api_key,omitempty"`
+	APIKeys            []string `json:"api_keys,omitempty"`
+	TimeoutMs          int      `json:"timeout_ms"`
+	StreamTimeoutMs    int      `json:"stream_timeout_ms"`
+	StreamingTimeoutMs int      `json:"streaming_timeout_ms,omitempty"`
+}
+
+// EffectiveAPIKeys returns the pool of API keys for AnthropicCompatible.
+// APIKeys takes precedence; falls back to the single APIKey field.
+func (c *AnthropicCompatibleConfig) EffectiveAPIKeys() []string {
+	if len(c.APIKeys) > 0 {
+		return c.APIKeys
+	}
+	if c.APIKey != "" {
+		return []string{c.APIKey}
+	}
+	return nil
+}
+
+// InterceptorsConfig controls request interception behavior.
+type InterceptorsConfig struct {
+	TitleGeneration    TitleGenerationConfig    `json:"title_generation"`
+	SecurityClassifier SecurityClassifierConfig `json:"security_classifier"`
+}
+
+// TitleGenerationConfig controls procedural title generation interception.
+type TitleGenerationConfig struct {
+	Enabled       bool   `json:"enabled"`
+	Action        string `json:"action"` // "dummy", "redirect"
+	DummyResponse string `json:"dummy_response"`
+	RedirectModel string `json:"redirect_model"`
+}
+
+// SecurityClassifierConfig controls security classifier interception.
+type SecurityClassifierConfig struct {
+	Enabled       bool              `json:"enabled"`
+	Action        string            `json:"action"` // "procedural", "redirect"
+	RedirectModel string            `json:"redirect_model"`
+	Permissions   PermissionsConfig `json:"permissions"`
+}
+
+// PermissionsConfig defines allow/deny regex patterns for security evaluation.
+type PermissionsConfig struct {
+	Allow []string `json:"allow"`
+	Deny  []string `json:"deny"`
 }
 
 // LoggingConfig controls application logging behavior.

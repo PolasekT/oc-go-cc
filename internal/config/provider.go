@@ -15,6 +15,7 @@ const (
 	ProviderOpenCodeZen = "opencode-zen"
 	ProviderAWSBedrock  = "aws-bedrock"
 	ProviderOpenRouter  = "openrouter"
+	ProviderAnthComp    = "anth-comp"
 )
 
 // KnownProviders lists every canonical provider name, in the order used for
@@ -24,6 +25,7 @@ var KnownProviders = []string{
 	ProviderOpenCodeZen,
 	ProviderAWSBedrock,
 	ProviderOpenRouter,
+	ProviderAnthComp,
 }
 
 // NormalizeProvider maps a configured provider string to its canonical form.
@@ -35,7 +37,11 @@ func NormalizeProvider(provider string) string {
 		return ProviderOpenCodeGo
 	}
 	if strings.IndexByte(provider, '_') >= 0 {
-		return strings.ReplaceAll(provider, "_", "-")
+		provider = strings.ReplaceAll(provider, "_", "-")
+	}
+	switch provider {
+	case "anth-comp", "anthropic-compatible", "anthropic":
+		return ProviderAnthComp
 	}
 	return provider
 }

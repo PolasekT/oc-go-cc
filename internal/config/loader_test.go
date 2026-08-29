@@ -1267,3 +1267,181 @@ func TestDefaults_StreamingTimeoutFallback(t *testing.T) {
 		t.Errorf("OpenCodeZen.StreamTimeoutMs = %d, want 700000 (should fallback to StreamingTimeoutMs)", cfg.OpenCodeZen.StreamTimeoutMs)
 	}
 }
+
+func TestLoadAnthCompConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	cfgJSON := `{
+		"api_key": "dummy-key",
+		"anth_comp": {
+			"base_url": "https://custom.anthropic.api/v1/chat/completions",
+			"anthropic_base_url": "https://custom.anthropic.api/v1/messages",
+			"api_key": "anth-comp-key-1",
+			"api_keys": ["k1", "k2"],
+			"timeout_ms": 120000,
+			"stream_timeout_ms": 240000
+		}
+	}`
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	_ = os.Setenv("OC_GO_CC_CONFIG", cfgPath)
+	defer func() { _ = os.Unsetenv("OC_GO_CC_CONFIG") }()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.AnthropicCompatible.BaseURL != "https://custom.anthropic.api/v1/chat/completions" {
+		t.Errorf("BaseURL = %q, want custom URL", cfg.AnthropicCompatible.BaseURL)
+	}
+	if cfg.AnthropicCompatible.AnthropicBaseURL != "https://custom.anthropic.api/v1/messages" {
+		t.Errorf("AnthropicBaseURL = %q, want custom URL", cfg.AnthropicCompatible.AnthropicBaseURL)
+	}
+	if len(cfg.AnthropicCompatible.EffectiveAPIKeys()) != 2 {
+		t.Errorf("EffectiveAPIKeys() length = %d, want 2", len(cfg.AnthropicCompatible.EffectiveAPIKeys()))
+	}
+}
+
+func TestLoadEffortAndRegexOverrides(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	cfgJSON := `{
+		"api_key": "dummy-key",
+		"enable_effort_scenario_routing": true,
+		"respect_requested_model_use_effort": true,
+		"respect_requested_model_use_context_threshold": true,
+		"model_effort_overrides": {
+			"claude-3-7-sonnet": {
+				"low": {
+					"provider": "anth_comp",
+					"model_id": "claude-3-5-haiku"
+				},
+				"high": {
+					"provider": "anth-comp",
+					"model_id": "claude-3-7-sonnet"
+				}
+			}
+		},
+		"model_regex_overrides": {
+			"^claude-3-5-sonnet.*": {
+				"provider": "anth_comp",
+				"model_id": "claude-3-5-sonnet-20241022"
+			}
+		},
+		"interceptors": {
+			"title_generation": {
+				"enabled": true,
+				"action": "dummy",
+				"dummy_response": "My Title"
+			},
+			"security_classifier": {
+				"enabled": true,
+				"action": "procedural",
+				"permissions": {
+					"allow": ["^git status$"],
+					"deny": ["^rm -rf /"]
+				}
+			}
+		}
+	}`
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	_ = os.Setenv("OC_GO_CC_CONFIG", cfgPath)
+	defer func() { _ = os.Unsetenv("OC_GO_CC_CONFIG") }()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if !cfg.EnableEffortScenarioRouting || !cfg.RespectRequestedModelUseEffort || !cfg.RespectRequestedModelUseContextThreshold {
+		t.Errorf("flags not parsed properly: %+v", cfg)
+	}
+	if len(cfg.ModelEffortOverrides["claude-3-7-sonnet"]) != 2 {
+		t.Errorf("ModelEffortOverrides length = %d, want 2", len(cfg.ModelEffortOverrides["claude-3-7-sonnet"]))
+	}
+	if len(cfg.ModelRegexOverrides) != 1 {
+		t.Errorf("ModelRegexOverrides length = %d, want 1", len(cfg.ModelRegexOverrides))
+	}
+	if !cfg.Interceptors.TitleGeneration.Enabled || cfg.Interceptors.TitleGeneration.Action != "dummy" {
+		t.Errorf("TitleGeneration interceptor not parsed properly")
+	}
+	if !cfg.Interceptors.SecurityClassifier.Enabled || len(cfg.Interceptors.SecurityClassifier.Permissions.Allow) != 1 {
+		t.Errorf("SecurityClassifier interceptor not parsed properly")
+	}
+}
+
+func TestValidateRegexOverrides_InvalidRegex(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	cfgJSON := `{
+		"api_key": "dummy-key",
+		"model_regex_overrides": {
+			"[invalid-regex(": {
+				"provider": "opencode-go",
+				"model_id": "model-1"
+			}
+		}
+	}`
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	_ = os.Setenv("OC_GO_CC_CONFIG", cfgPath)
+	defer func() { _ = os.Unsetenv("OC_GO_CC_CONFIG") }()
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for invalid regex pattern, got nil")
+	}
+}
+
+func TestLoadUserNewConfig(t *testing.T) {
+	cfgPath := "/local_ssd/projects/oc-go-cc/.tmp/new/config.json"
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		t.Skip("skipping test, new config.json not found")
+	}
+
+	_ = os.Setenv("OC_GO_CC_CONFIG", cfgPath)
+	_ = os.Setenv("ROUTATIC_PROXY_API_KEY", "test-key")
+	_ = os.Setenv("ROUTATIC_PROXY_ANTH_COMP_API_KEY", "test-anth-key")
+	_ = os.Setenv("ROUTATIC_PROXY_PORT", "3456")
+	_ = os.Setenv("ROUTATIC_PROXY_HOST", "0.0.0.0")
+	_ = os.Setenv("ROUTATIC_PROXY_LOG_LEVEL", "info")
+	defer func() {
+		_ = os.Unsetenv("OC_GO_CC_CONFIG")
+		_ = os.Unsetenv("ROUTATIC_PROXY_API_KEY")
+		_ = os.Unsetenv("ROUTATIC_PROXY_ANTH_COMP_API_KEY")
+		_ = os.Unsetenv("ROUTATIC_PROXY_PORT")
+		_ = os.Unsetenv("ROUTATIC_PROXY_HOST")
+		_ = os.Unsetenv("ROUTATIC_PROXY_LOG_LEVEL")
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("failed to load .tmp/new/config.json: %v", err)
+	}
+
+	if cfg.APIKey != "test-key" {
+		t.Errorf("APIKey = %q, want test-key", cfg.APIKey)
+	}
+	if cfg.AnthropicCompatible.APIKey != "test-anth-key" {
+		t.Errorf("AnthropicCompatible.APIKey = %q, want test-anth-key", cfg.AnthropicCompatible.APIKey)
+	}
+	if !cfg.Interceptors.TitleGeneration.Enabled {
+		t.Errorf("TitleGeneration interceptor should be enabled")
+	}
+	if !cfg.Interceptors.SecurityClassifier.Enabled {
+		t.Errorf("SecurityClassifier interceptor should be enabled")
+	}
+}
+
+

@@ -327,8 +327,18 @@ Press Ctrl+C to stop the server.`,
 				})
 			}
 
+			var captureLogger *debug.CaptureLogger
+			if cfg.Logging.DebugCapture != nil && cfg.Logging.DebugCapture.Enabled {
+				storage, err := debug.NewStorage(*cfg.Logging.DebugCapture)
+				if err != nil {
+					return fmt.Errorf("failed to create debug storage: %w", err)
+				}
+				captureLogger = debug.NewCaptureLogger(storage, true)
+				defer func() { _ = captureLogger.Close() }()
+			}
+
 			// Create and start proxy server.
-			srv, err := server.NewServer(atomicCfg, nil)
+			srv, err := server.NewServer(atomicCfg, captureLogger)
 			if err != nil {
 				return fmt.Errorf("failed to create server: %w", err)
 			}

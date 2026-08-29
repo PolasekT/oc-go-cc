@@ -13,6 +13,9 @@ func TestNormalizeProvider(t *testing.T) {
 		{"aws_bedrock", ProviderAWSBedrock},
 		{"aws-bedrock", ProviderAWSBedrock},
 		{"openrouter", ProviderOpenRouter},
+		{"anth_comp", ProviderAnthComp},
+		{"anth-comp", ProviderAnthComp},
+		{"anthropic", ProviderAnthComp},
 		{"mystery", "mystery"},
 	}
 	for _, tt := range tests {
@@ -23,7 +26,7 @@ func TestNormalizeProvider(t *testing.T) {
 }
 
 func TestIsKnownProvider(t *testing.T) {
-	for _, provider := range append([]string{"", "aws_bedrock", "opencode_zen"}, KnownProviders...) {
+	for _, provider := range append([]string{"", "aws_bedrock", "opencode_zen", "anth_comp", "anthropic"}, KnownProviders...) {
 		if !IsKnownProvider(provider) {
 			t.Errorf("IsKnownProvider(%q) = false, want true", provider)
 		}
@@ -36,7 +39,7 @@ func TestIsKnownProvider(t *testing.T) {
 }
 
 func TestQuotedKnownProviders(t *testing.T) {
-	want := `"opencode-go", "opencode-zen", "aws-bedrock" or "openrouter"`
+	want := `"opencode-go", "opencode-zen", "aws-bedrock", "openrouter" or "anth-comp"`
 	if got := quotedKnownProviders(); got != want {
 		t.Errorf("quotedKnownProviders() = %q, want %q", got, want)
 	}

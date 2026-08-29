@@ -55,6 +55,7 @@ const (
 	ProviderOpenCodeZen = config.ProviderOpenCodeZen
 	ProviderAWSBedrock  = config.ProviderAWSBedrock
 	ProviderOpenRouter  = config.ProviderOpenRouter
+	ProviderAnthComp    = config.ProviderAnthComp
 )
 
 const (
@@ -114,6 +115,10 @@ func (c *OpenCodeClient) getProviderAPIKeys(modelConfig config.ModelConfig) []st
 		if keys := cfg.OpenRouter.EffectiveAPIKeys(); len(keys) > 0 {
 			return keys
 		}
+	case IsAnthComp(modelConfig):
+		if keys := cfg.AnthropicCompatible.EffectiveAPIKeys(); len(keys) > 0 {
+			return keys
+		}
 	default:
 		if keys := cfg.OpenCodeGo.EffectiveAPIKeys(); len(keys) > 0 {
 			return keys
@@ -143,6 +148,8 @@ func ProviderKeyCount(atomicCfg *config.AtomicConfig, provider string) int {
 		keys = cfg.AWSBedrock.EffectiveAPIKeys()
 	case ProviderOpenRouter:
 		keys = cfg.OpenRouter.EffectiveAPIKeys()
+	case ProviderAnthComp:
+		keys = cfg.AnthropicCompatible.EffectiveAPIKeys()
 	default:
 		// Unknown provider - default to global keys
 		keys = cfg.EffectiveAPIKeys()
@@ -207,6 +214,11 @@ func (c *OpenCodeClient) StreamIdleTimeout(modelConfig config.ModelConfig) time.
 		if ms <= 0 {
 			ms = cfg.OpenRouter.TimeoutMs
 		}
+	case IsAnthComp(modelConfig):
+		ms = cfg.AnthropicCompatible.StreamTimeoutMs
+		if ms <= 0 {
+			ms = cfg.AnthropicCompatible.TimeoutMs
+		}
 	default:
 		ms = cfg.OpenCodeGo.StreamTimeoutMs
 		if ms <= 0 {
@@ -233,6 +245,8 @@ func (c *OpenCodeClient) RequestTimeout(model config.ModelConfig) time.Duration 
 		timeoutMs = cfg.OpenCodeZen.TimeoutMs
 	case IsOpenRouter(model):
 		timeoutMs = cfg.OpenRouter.TimeoutMs
+	case IsAnthComp(model):
+		timeoutMs = cfg.AnthropicCompatible.TimeoutMs
 	default:
 		timeoutMs = cfg.OpenCodeGo.TimeoutMs
 	}
@@ -264,6 +278,11 @@ func (c *OpenCodeClient) StreamingTimeout(model config.ModelConfig) time.Duratio
 		timeoutMs = cfg.OpenRouter.StreamingTimeoutMs
 		if timeoutMs <= 0 {
 			timeoutMs = cfg.OpenRouter.TimeoutMs
+		}
+	case IsAnthComp(model):
+		timeoutMs = cfg.AnthropicCompatible.StreamingTimeoutMs
+		if timeoutMs <= 0 {
+			timeoutMs = cfg.AnthropicCompatible.TimeoutMs
 		}
 	default:
 		timeoutMs = cfg.OpenCodeGo.StreamingTimeoutMs
@@ -342,6 +361,11 @@ func IsBedrock(model config.ModelConfig) bool {
 // IsOpenRouter returns true if the model uses the OpenRouter provider.
 func IsOpenRouter(model config.ModelConfig) bool {
 	return Provider(model) == ProviderOpenRouter
+}
+
+// IsAnthComp returns true if the model uses the AnthropicCompatible provider.
+func IsAnthComp(model config.ModelConfig) bool {
+	return Provider(model) == ProviderAnthComp
 }
 
 func setOpenRouterHeaders(req *http.Request) {

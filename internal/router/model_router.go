@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -207,9 +208,20 @@ func describeRouting(trigger string, primary config.ModelConfig) string {
 // resolveRequestedModel checks if the user-specified model should override
 // scenario-based routing. Returns the route result and true if it matched,
 // or zero value and false if scenario routing should proceed normally.
-func (r *ModelRouter) resolveRequestedModel(cfg *config.Config, requestedModel string, needsVision bool) (RouteResult, bool, error) {
+func (r *ModelRouter) resolveRequestedModel(cfg *config.Config, requestedModel string, needsVision bool, tokenCount int, effort string) (RouteResult, bool, error) {
 	if !isRespectRequestedModel(cfg) || requestedModel == "" {
 		return RouteResult{}, false, nil
+	}
+
+	// If respect_requested_model_use_effort is enabled and effort is provided, try effort-based override first
+	if cfg.RespectRequestedModelUseEffort && effort != "" {
+		if effortResult, ok := r.RouteWithEffortOverride(requestedModel, effort); ok {
+			if cfg.RespectRequestedModelUseContextThreshold && effortResult.Primary.ContextThreshold > 0 && tokenCount > effortResult.Primary.ContextThreshold {
+				// Exceeded threshold, bypass requested model override
+			} else {
+				return effortResult, true, nil
+			}
+		}
 	}
 
 	// Look up the requested model in config to inherit its settings
@@ -244,6 +256,10 @@ func (r *ModelRouter) resolveRequestedModel(cfg *config.Config, requestedModel s
 	primary = config.ResolveModelConfig(primary)
 	if needsVision && !primary.Vision {
 		return RouteResult{}, false, fmt.Errorf("requested model %s does not support vision", primary.ModelID)
+	}
+
+	if cfg.RespectRequestedModelUseContextThreshold && primary.ContextThreshold > 0 && tokenCount > primary.ContextThreshold {
+		return RouteResult{}, false, nil
 	}
 
 	fallbacks := cfg.Fallbacks["default"]
@@ -343,11 +359,16 @@ func (r *ModelRouter) legacyUnknownModelConfig(cfg *config.Config, requestedMode
 
 // Route determines which model to use for a request.
 // If respect_requested_model is enabled and requestedModel is provided, it overrides scenario-based routing.
-func (r *ModelRouter) Route(messages []MessageContent, tokenCount int, requestedModel string) (RouteResult, error) {
+func (r *ModelRouter) Route(messages []MessageContent, tokenCount int, requestedModel string, effort ...string) (RouteResult, error) {
 	cfg := r.atomic.Get()
 	facts := AnalyzeRequestFacts(messages)
 
-	if result, ok, err := r.resolveRequestedModel(cfg, requestedModel, facts.NeedsVision); err != nil {
+	eff := ""
+	if len(effort) > 0 {
+		eff = effort[0]
+	}
+
+	if result, ok, err := r.resolveRequestedModel(cfg, requestedModel, facts.NeedsVision, tokenCount, eff); err != nil {
 		return RouteResult{}, err
 	} else if ok {
 		return result, nil
@@ -357,6 +378,17 @@ func (r *ModelRouter) Route(messages []MessageContent, tokenCount int, requested
 	result := DetectScenario(messages, tokenCount, cfg)
 	scenarioKey := string(result.Scenario)
 	trigger := fmt.Sprintf("scenario=%s (%s)", result.Scenario, result.Reason)
+
+	// If enable_effort_scenario_routing is enabled, try effort-based override for the scenario
+	if cfg.EnableEffortScenarioRouting && eff != "" {
+		if effortResult, ok := r.RouteWithEffortOverride(scenarioKey, eff); ok {
+			if cfg.RespectRequestedModelUseContextThreshold && effortResult.Primary.ContextThreshold > 0 && tokenCount > effortResult.Primary.ContextThreshold {
+				// Exceeded threshold, bypass effort override and proceed to standard scenario model
+			} else {
+				return effortResult, nil
+			}
+		}
+	}
 
 	// Get primary model for scenario. When cost-based routing is enabled and
 	// a non-empty catalog is available, prefer the cheapest matching catalog
@@ -428,6 +460,74 @@ func (r *ModelRouter) RouteWithOverride(requestedModel string) (RouteResult, boo
 		return RouteResult{}, false
 	}
 	return buildOverrideResult(cfg, override, requestedModel), true
+}
+
+// RouteWithRegexOverride checks whether the requested model matches any regex pattern
+// configured in model_regex_overrides. Patterns are evaluated in longest-first order.
+func (r *ModelRouter) RouteWithRegexOverride(requestedModel string) (RouteResult, bool) {
+	cfg := r.atomic.Get()
+	if len(cfg.ModelRegexOverrides) == 0 || requestedModel == "" {
+		return RouteResult{}, false
+	}
+
+	patterns := make([]string, 0, len(cfg.ModelRegexOverrides))
+	for pattern := range cfg.ModelRegexOverrides {
+		patterns = append(patterns, pattern)
+	}
+	sort.Slice(patterns, func(i, j int) bool {
+		if len(patterns[i]) != len(patterns[j]) {
+			return len(patterns[i]) > len(patterns[j])
+		}
+		return patterns[i] < patterns[j]
+	})
+
+	for _, pattern := range patterns {
+		if pattern == "" {
+			continue
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			continue
+		}
+		if re.MatchString(requestedModel) {
+			return buildOverrideResult(cfg, cfg.ModelRegexOverrides[pattern], pattern), true
+		}
+	}
+	return RouteResult{}, false
+}
+
+// RouteWithEffortOverride checks if the modelOrScenario and effort match a model_effort_overrides entry.
+func (r *ModelRouter) RouteWithEffortOverride(modelOrScenario, effort string) (RouteResult, bool) {
+	cfg := r.atomic.Get()
+	if cfg.ModelEffortOverrides == nil || modelOrScenario == "" || effort == "" {
+		return RouteResult{}, false
+	}
+	effortMap, ok := cfg.ModelEffortOverrides[modelOrScenario]
+	if !ok {
+		return RouteResult{}, false
+	}
+	effortLower := strings.ToLower(effort)
+	override, ok := effortMap[effortLower]
+	if !ok {
+		override, ok = effortMap[effort]
+	}
+	if !ok {
+		return RouteResult{}, false
+	}
+	fallbackKey := modelOrScenario + ":" + effort
+	fallbacks := cfg.Fallbacks[fallbackKey]
+	if len(fallbacks) == 0 {
+		fallbacks = cfg.Fallbacks[modelOrScenario]
+	}
+	if len(fallbacks) == 0 {
+		fallbacks = cfg.Fallbacks["default"]
+	}
+	return RouteResult{
+		Primary:   override,
+		Fallbacks: fallbacks,
+		Scenario:  ScenarioOverride,
+		Reason:    describeRouting(fmt.Sprintf("matched effort override for %s with effort %s", modelOrScenario, effort), override),
+	}, true
 }
 
 // RouteWithFamilyOverride checks whether the requested model string contains a
@@ -505,6 +605,7 @@ type ModelInfo struct {
 //
 //   - legacy config "models" aliases,
 //   - "model_overrides" keys (the Claude aliases users pin),
+//   - "model_regex_overrides" patterns,
 //   - catalog canonical names (provider/model), when a catalog is available.
 //
 // Any of these is a valid value for the request "model" field, so surfacing
@@ -542,6 +643,14 @@ func (r *ModelRouter) ListModels(ctx context.Context) []ModelInfo {
 	for alias, mc := range cfg.ModelOverrides {
 		add(alias, "", mc.Provider)
 	}
+	for pattern, mc := range cfg.ModelRegexOverrides {
+		add(pattern, "", mc.Provider)
+	}
+	for modelName, effortMap := range cfg.ModelEffortOverrides {
+		for _, mc := range effortMap {
+			add(modelName, "", mc.Provider)
+		}
+	}
 	for alias, mc := range cfg.Models {
 		add(alias, "", mc.Provider)
 	}
@@ -570,10 +679,15 @@ func (rr *RouteResult) GetModelChain() []config.ModelConfig {
 // RouteForStreaming determines which model to use for streaming requests.
 // Prioritizes fast TTFT (time-to-first-token) over capability.
 // If respect_requested_model is enabled and requestedModel is provided, it overrides scenario-based routing.
-func (r *ModelRouter) RouteForStreaming(messages []MessageContent, tokenCount int, requestedModel string) (RouteResult, error) {
+func (r *ModelRouter) RouteForStreaming(messages []MessageContent, tokenCount int, requestedModel string, effort ...string) (RouteResult, error) {
 	cfg := r.atomic.Get()
 
-	if result, ok, err := r.resolveRequestedModel(cfg, requestedModel, false); err != nil {
+	eff := ""
+	if len(effort) > 0 {
+		eff = effort[0]
+	}
+
+	if result, ok, err := r.resolveRequestedModel(cfg, requestedModel, false, tokenCount, eff); err != nil {
 		return RouteResult{}, err
 	} else if ok {
 		return result, nil
@@ -583,6 +697,17 @@ func (r *ModelRouter) RouteForStreaming(messages []MessageContent, tokenCount in
 	result := RouteForStreaming(messages, tokenCount, cfg)
 	scenarioKey := string(result.Scenario)
 	trigger := fmt.Sprintf("scenario=%s (%s)", result.Scenario, result.Reason)
+
+	// If enable_effort_scenario_routing is enabled, try effort-based override for the scenario
+	if cfg.EnableEffortScenarioRouting && eff != "" {
+		if effortResult, ok := r.RouteWithEffortOverride(scenarioKey, eff); ok {
+			if cfg.RespectRequestedModelUseContextThreshold && effortResult.Primary.ContextThreshold > 0 && tokenCount > effortResult.Primary.ContextThreshold {
+				// Exceeded threshold, bypass effort override
+			} else {
+				return effortResult, nil
+			}
+		}
+	}
 
 	// Get primary model for scenario. When cost-based routing is enabled and
 	// a non-empty catalog is available, prefer the cheapest matching catalog
