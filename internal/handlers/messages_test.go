@@ -2110,5 +2110,59 @@ func TestHandleMessages_SecurityClassifierInterceptor_Procedural(t *testing.T) {
 			t.Errorf("expected blocked=yes for git command in transcript, got: %+v", resp.Content)
 		}
 	})
+
+	// Test JSON transcript with past history — current action (npm run lint) must NOT be blocked by historical git command
+	t.Run("json transcript history does not cause false positive", func(t *testing.T) {
+		cfgJSON := &config.Config{
+			APIKey: "test-key",
+			Interceptors: config.InterceptorsConfig{
+				SecurityClassifier: config.SecurityClassifierConfig{
+					Enabled: true,
+					Action:  "procedural",
+					Permissions: config.PermissionsConfig{
+						Deny:  []string{`Bash\(.*git.*\)`, `Bash\(.*rm\s+-rf.*\)`},
+						Allow: []string{`Bash\(.*\)`},
+					},
+				},
+			},
+		}
+		handlerJSON := NewMessagesHandler(
+			config.NewAtomicConfig(cfgJSON, ""),
+			ocClient,
+			nil,
+			modelRouter,
+			nil,
+			tokenCounter,
+			metrics.New(),
+			nil,
+			nil,
+			nil,
+		)
+
+		requestBody := `{
+			"model": "agentic",
+			"system": "<cc_automode_permissions>## Classification Process</cc_automode_permissions>",
+			"messages": [{
+				"role": "user",
+				"content": "<transcript>\n{\"Bash\":\"git diff --check\"}\n{\"Bash\":\"git status\"}\n{\"Bash\":\"npm run lint\"}\n</transcript>"
+			}]
+		}`
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(requestBody))
+		req.Header.Set("Content-Type", "application/json")
+
+		handlerJSON.HandleMessages(recorder, req)
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", recorder.Code)
+		}
+		var resp types.MessageResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if len(resp.Content) == 0 || !strings.Contains(resp.Content[0].Text, "<block>no</block>") {
+			t.Errorf("expected blocked=no for npm run lint even with past git in history, got: %+v", resp.Content)
+		}
+	})
 }
 

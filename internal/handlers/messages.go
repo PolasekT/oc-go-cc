@@ -745,78 +745,63 @@ func (h *MessagesHandler) handleProceduralSecurityClassifier(
 	}
 	contentStr := userContent.String()
 
-	// Extract commands from various Claude Code transcript/classifier formats:
-	// 1. JSON transcript: {"Bash": "..."} or {"Bash":"..."}
-	// 2. Tool calls: Bash(...)
-	// 3. Plain text prefixes: Bash <cmd>
-	// 4. JSON input fields: "command": "..."
+	// Command extraction: find the LAST (most recent) tool action in the transcript
 	reJSONBash := regexp.MustCompile(`\{"Bash"\s*:\s*"([^"]+)"\}`)
 	reBashParens := regexp.MustCompile(`(?s)Bash\((.*?)\)`)
 	reBashSpace := regexp.MustCompile(`Bash\s+([^\n<]+)`)
 	reJSONCommand := regexp.MustCompile(`"command"\s*:\s*"([^"]+)"`)
 
-	var extractedCmds []string
-	if matches := reJSONBash.FindAllStringSubmatch(contentStr, -1); len(matches) > 0 {
-		for _, m := range matches {
-			if len(m) > 1 && m[1] != "" {
-				extractedCmds = append(extractedCmds, strings.TrimSpace(m[1]))
-			}
+	var lastCmd string
+	var lastIndex int = -1
+
+	for _, match := range reJSONBash.FindAllStringSubmatchIndex(contentStr, -1) {
+		if match[0] > lastIndex {
+			lastIndex = match[0]
+			lastCmd = strings.TrimSpace(contentStr[match[2]:match[3]])
 		}
 	}
-	if matches := reBashParens.FindAllStringSubmatch(contentStr, -1); len(matches) > 0 {
-		for _, m := range matches {
-			if len(m) > 1 && m[1] != "" {
-				extractedCmds = append(extractedCmds, strings.TrimSpace(m[1]))
-			}
+	for _, match := range reBashParens.FindAllStringSubmatchIndex(contentStr, -1) {
+		if match[0] > lastIndex {
+			lastIndex = match[0]
+			lastCmd = strings.TrimSpace(contentStr[match[2]:match[3]])
 		}
 	}
-	if matches := reBashSpace.FindAllStringSubmatch(contentStr, -1); len(matches) > 0 {
-		for _, m := range matches {
-			if len(m) > 1 && m[1] != "" {
-				extractedCmds = append(extractedCmds, strings.TrimSpace(m[1]))
-			}
+	for _, match := range reBashSpace.FindAllStringSubmatchIndex(contentStr, -1) {
+		if match[0] > lastIndex {
+			lastIndex = match[0]
+			lastCmd = strings.TrimSpace(contentStr[match[2]:match[3]])
 		}
 	}
-	if matches := reJSONCommand.FindAllStringSubmatch(contentStr, -1); len(matches) > 0 {
-		for _, m := range matches {
-			if len(m) > 1 && m[1] != "" {
-				extractedCmds = append(extractedCmds, strings.TrimSpace(m[1]))
-			}
+	for _, match := range reJSONCommand.FindAllStringSubmatchIndex(contentStr, -1) {
+		if match[0] > lastIndex {
+			lastIndex = match[0]
+			lastCmd = strings.TrimSpace(contentStr[match[2]:match[3]])
 		}
 	}
 
-	cmd := strings.TrimSpace(contentStr)
-	if len(extractedCmds) > 0 {
-		cmd = extractedCmds[len(extractedCmds)-1] // Take the most recent action
+	cmd := lastCmd
+	if cmd == "" {
+		cmd = strings.TrimSpace(contentStr)
 	}
 
 	testMatch := func(pattern string) bool {
-		// 1. Match against bare extracted command
-		if matched, err := regexp.MatchString(pattern, cmd); err == nil && matched {
-			return true
-		}
-		// 2. Match against Bash(...) wrapper format (common user regex format)
-		if matched, err := regexp.MatchString(pattern, fmt.Sprintf("Bash(%s)", cmd)); err == nil && matched {
-			return true
-		}
-		// 3. Match against Bash <cmd> format
-		if matched, err := regexp.MatchString(pattern, fmt.Sprintf("Bash %s", cmd)); err == nil && matched {
-			return true
-		}
-		// 4. Match against {"Bash":"<cmd>"} format
-		if matched, err := regexp.MatchString(pattern, fmt.Sprintf(`{"Bash":"%s"}`, cmd)); err == nil && matched {
-			return true
-		}
-		// 5. Match against each individual extracted command if multiple
-		for _, c := range extractedCmds {
-			if matched, err := regexp.MatchString(pattern, c); err == nil && matched {
+		if cmd != "" && cmd != contentStr {
+			// Match ONLY the target command being classified — never historical turns
+			if matched, err := regexp.MatchString(pattern, cmd); err == nil && matched {
 				return true
 			}
-			if matched, err := regexp.MatchString(pattern, fmt.Sprintf("Bash(%s)", c)); err == nil && matched {
+			if matched, err := regexp.MatchString(pattern, fmt.Sprintf("Bash(%s)", cmd)); err == nil && matched {
 				return true
 			}
+			if matched, err := regexp.MatchString(pattern, fmt.Sprintf("Bash %s", cmd)); err == nil && matched {
+				return true
+			}
+			if matched, err := regexp.MatchString(pattern, fmt.Sprintf(`{"Bash":"%s"}`, cmd)); err == nil && matched {
+				return true
+			}
+			return false
 		}
-		// 6. Match against full content
+		// Fallback only if no specific command could be isolated
 		if matched, err := regexp.MatchString(pattern, contentStr); err == nil && matched {
 			return true
 		}
