@@ -745,22 +745,78 @@ func (h *MessagesHandler) handleProceduralSecurityClassifier(
 	}
 	contentStr := userContent.String()
 
-	cmd := strings.TrimSpace(contentStr)
-	re := regexp.MustCompile(`(?:Bash\s+([^\n<]+)|(?s)Bash\((.*?)\))`)
-	matches := re.FindAllStringSubmatch(contentStr, -1)
-	if len(matches) > 0 {
-		lastMatch := matches[len(matches)-1]
-		if len(lastMatch) > 1 && lastMatch[1] != "" {
-			cmd = strings.TrimSpace(lastMatch[1])
-		} else if len(lastMatch) > 2 && lastMatch[2] != "" {
-			cmd = strings.TrimSpace(lastMatch[2])
+	// Extract commands from various Claude Code transcript/classifier formats:
+	// 1. JSON transcript: {"Bash": "..."} or {"Bash":"..."}
+	// 2. Tool calls: Bash(...)
+	// 3. Plain text prefixes: Bash <cmd>
+	// 4. JSON input fields: "command": "..."
+	reJSONBash := regexp.MustCompile(`\{"Bash"\s*:\s*"([^"]+)"\}`)
+	reBashParens := regexp.MustCompile(`(?s)Bash\((.*?)\)`)
+	reBashSpace := regexp.MustCompile(`Bash\s+([^\n<]+)`)
+	reJSONCommand := regexp.MustCompile(`"command"\s*:\s*"([^"]+)"`)
+
+	var extractedCmds []string
+	if matches := reJSONBash.FindAllStringSubmatch(contentStr, -1); len(matches) > 0 {
+		for _, m := range matches {
+			if len(m) > 1 && m[1] != "" {
+				extractedCmds = append(extractedCmds, strings.TrimSpace(m[1]))
+			}
+		}
+	}
+	if matches := reBashParens.FindAllStringSubmatch(contentStr, -1); len(matches) > 0 {
+		for _, m := range matches {
+			if len(m) > 1 && m[1] != "" {
+				extractedCmds = append(extractedCmds, strings.TrimSpace(m[1]))
+			}
+		}
+	}
+	if matches := reBashSpace.FindAllStringSubmatch(contentStr, -1); len(matches) > 0 {
+		for _, m := range matches {
+			if len(m) > 1 && m[1] != "" {
+				extractedCmds = append(extractedCmds, strings.TrimSpace(m[1]))
+			}
+		}
+	}
+	if matches := reJSONCommand.FindAllStringSubmatch(contentStr, -1); len(matches) > 0 {
+		for _, m := range matches {
+			if len(m) > 1 && m[1] != "" {
+				extractedCmds = append(extractedCmds, strings.TrimSpace(m[1]))
+			}
 		}
 	}
 
+	cmd := strings.TrimSpace(contentStr)
+	if len(extractedCmds) > 0 {
+		cmd = extractedCmds[len(extractedCmds)-1] // Take the most recent action
+	}
+
 	testMatch := func(pattern string) bool {
+		// 1. Match against bare extracted command
 		if matched, err := regexp.MatchString(pattern, cmd); err == nil && matched {
 			return true
 		}
+		// 2. Match against Bash(...) wrapper format (common user regex format)
+		if matched, err := regexp.MatchString(pattern, fmt.Sprintf("Bash(%s)", cmd)); err == nil && matched {
+			return true
+		}
+		// 3. Match against Bash <cmd> format
+		if matched, err := regexp.MatchString(pattern, fmt.Sprintf("Bash %s", cmd)); err == nil && matched {
+			return true
+		}
+		// 4. Match against {"Bash":"<cmd>"} format
+		if matched, err := regexp.MatchString(pattern, fmt.Sprintf(`{"Bash":"%s"}`, cmd)); err == nil && matched {
+			return true
+		}
+		// 5. Match against each individual extracted command if multiple
+		for _, c := range extractedCmds {
+			if matched, err := regexp.MatchString(pattern, c); err == nil && matched {
+				return true
+			}
+			if matched, err := regexp.MatchString(pattern, fmt.Sprintf("Bash(%s)", c)); err == nil && matched {
+				return true
+			}
+		}
+		// 6. Match against full content
 		if matched, err := regexp.MatchString(pattern, contentStr); err == nil && matched {
 			return true
 		}
@@ -933,17 +989,22 @@ func isTitleGenerationRequest(systemText string, req *types.MessageRequest) bool
 }
 
 func isSecurityClassifierRequest(systemText string, req *types.MessageRequest) bool {
-	lowerSys := strings.ToLower(systemText)
-	if strings.Contains(lowerSys, "security monitor for autonomous ai coding agents") ||
-		strings.Contains(lowerSys, "security classifier") {
+	checkText := func(text string) bool {
+		lower := strings.ToLower(text)
+		return strings.Contains(lower, "security monitor for autonomous ai coding agents") ||
+			strings.Contains(lower, "security classifier") ||
+			strings.Contains(lower, "<cc_automode_permissions>") ||
+			strings.Contains(lower, "err on the side of blocking") ||
+			(strings.Contains(lower, "<block>") && strings.Contains(lower, "hard block"))
+	}
+
+	if checkText(systemText) {
 		return true
 	}
 	if req != nil {
 		for _, msg := range req.Messages {
 			for _, b := range msg.ContentBlocks() {
-				lowerText := strings.ToLower(b.Text)
-				if strings.Contains(lowerText, "security monitor for autonomous ai coding agents") ||
-					strings.Contains(lowerText, "security classifier") {
+				if checkText(b.Text) {
 					return true
 				}
 			}
